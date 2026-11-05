@@ -1,0 +1,19 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+*.dylib
+*.o
+src/pelicanfs_native/_pelican_cffi.*
+src/pelicanfs_native/*.c
+
+# Environments
+.venv/
+venv/
+
+# Caches
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

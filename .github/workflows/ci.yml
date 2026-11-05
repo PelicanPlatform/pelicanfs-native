@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pin the federation under test.  "latest" would make a green run
+  # unreproducible and would turn an upstream release into a surprise
+  # failure on an unrelated pull request.
+  PELICAN_VERSION: ""
+  # The pelican-c revision whose ABI this binding is built against.
+  PELICAN_C_REF: main
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out pelican-c
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: PelicanPlatform/pelican-c
+          ref: ${{ env.PELICAN_C_REF }}
+          path: pelican-c
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: pelican-c/go.mod
+          cache: true
+          cache-dependency-path: pelican-c/go.sum
+
+      # Installed into a scratch prefix rather than /usr/local, so the
+      # build exercises the pkg-config path that an ordinary consumer
+      # takes -- including the rpath that a non-default prefix needs.
+      - name: Build and install libpelicanclient
+        run: |
+          set -euo pipefail
+          make -C pelican-c install PREFIX="${GITHUB_WORKSPACE}/pelican-c-install"
+          echo "PELICAN_C_PREFIX=${GITHUB_WORKSPACE}/pelican-c-install" >> "$GITHUB_ENV"
+
+      - name: Create a virtual environment
+        run: |
+          python3 -m venv .venv
+          echo "${GITHUB_WORKSPACE}/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install pelicanfs-native and both test implementations
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          # The 'differential' extra brings in pelicanfs, the pure-Python
+          # implementation this one is compared against.
+          python -m pip install -e . pytest pytest-timeout pelicanfs "aiowebdav2<1"
+
+      - name: Fetch the pelican-server binary
+        run: |
+          set -euo pipefail
+          dir=$(scripts/fetch-pelican.sh "${GITHUB_WORKSPACE}/.pelican-bin")
+          echo "PELICANFS_NATIVE_CLIENT_BINARY=${dir}/pelican" >> "$GITHUB_ENV"
+          echo "PELICANFS_NATIVE_SERVER_BINARY=${dir}/pelican-server" >> "$GITHUB_ENV"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Run the suite
+        run: pytest -v
+
+      - name: Server log on failure
+        if: failure()
+        run: find /tmp -name 'pelican-server.log' -newermt '-1 hour' -exec tail -n 200 {} +
+
+  # The same suite inside the Pelican development container, which ships
+  # the server binaries and XRootD.  Kept alongside the release-download
+  # job rather than replacing it: the container tracks ITB builds, so the
+  # two together catch a break in either direction.
+  container:
+    name: Test (dev container)
+    runs-on: ubuntu-24.04
+    container:
+      image: hub.opensciencegrid.org/pelican_platform/pelican-dev:latest-itb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out pelican-c
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: PelicanPlatform/pelican-c
+          ref: ${{ env.PELICAN_C_REF }}
+          path: pelican-c
+
+      - name: Build and install libpelicanclient
+        run: |
+          set -euo pipefail
+          make -C pelican-c install PREFIX="${GITHUB_WORKSPACE}/pelican-c-install"
+          echo "PELICAN_C_PREFIX=${GITHUB_WORKSPACE}/pelican-c-install" >> "$GITHUB_ENV"
+
+      - name: Install and test
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest pytest-timeout pelicanfs "aiowebdav2<1"
+          pytest -v

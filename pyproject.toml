@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools >=77", "cffi >=1.17"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pelicanfs-native"
+version = "0.1.0.dev0"
+description = "An FSSpec implementation backed by the native Pelican client library"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Pelican Platform Developers", email = "info@pelicanplatform.org" }
+]
+keywords = ["pelican", "fsspec", "osdf"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "cffi >=1.17",
+    "fsspec >=2024.3.1",
+]
+
+# Deliberately NOT "pelican"/"osdf": fsspec's entry-point loader
+# (fsspec/__init__.py, process_entries) registers with clobber=True and
+# skips same-name duplicates, so sharing a protocol name with pelicanfs
+# would silently shadow one implementation rather than raise -- and a
+# differential harness would then compare an implementation with itself.
+[project.entry-points."fsspec.specs"]
+"pelican+native" = "pelicanfs_native.core:PelicanNativeFileSystem"
+"osdf+native" = "pelicanfs_native.core:OSDFNativeFileSystem"
+
+[project.urls]
+Source = "https://github.com/PelicanPlatform/pelicanfs-native"
+Pelican-C-Source = "https://github.com/PelicanPlatform/pelican-c"
+Pelican-Source = "https://github.com/PelicanPlatform/pelican"
+Bug-Reports = "https://github.com/PelicanPlatform/pelicanfs-native/issues"
+
+[dependency-groups]
+testing = [
+    "pytest >=8",
+    "pytest-timeout",
+]
+# The differential oracle: both implementations installed side by side.
+differential = [
+    { include-group = "testing" },
+    "pelicanfs >=1.3",
+    # pelicanfs 1.5.0 calls aiowebdav2's `info` and `list_with_infos`,
+    # which 1.0.0 removed, and pelicanfs declares the dependency with no
+    # upper bound -- so a plain `pip install pelicanfs` yields an install
+    # whose ls() and info() raise AttributeError. Pin until pelicanfs
+    # caps it itself.
+    "aiowebdav2 <1",
+]
+dev = [{ include-group = "differential" }]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pelicanfs_native = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+timeout = 300
+markers = [
+    "differential: compares pelicanfs_native against pelicanfs",
+]
