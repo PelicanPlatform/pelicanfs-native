@@ -91,10 +91,18 @@ def _explains_range(size: int, start: int | None, end: int | None) -> str | None
 
     Note what is *not* here.  Negative bounds as such:
     ``cat_file(path, -5, -1)`` works on both, and the first reading of
-    the sweep said negatives were the problem and was wrong.  Nor is a
-    range whose bounds are *equal*: ``cat_file(path, 5, 5)`` returns
-    ``b''`` from both, so only a strictly inverted range is absorbed --
-    equality is held to agreeing, which it does.
+    the sweep said negatives were the problem and was wrong.
+
+    The empty case is ``stop <= begin`` rather than ``stop < begin``,
+    and the ``=`` was added after a later seed drew ``(None, 0)``.  An
+    explicit ``(0, 0)`` and ``(5, 5)`` do agree -- the register entry
+    says so and it is still true -- but ``(None, 0)`` resolves to the
+    same empty range and does *not*: pelicanfs answers 416 for it.  So
+    its behaviour on one range depends on whether the caller named the
+    start, which is the same complaint the entry already makes, under
+    a spelling the original 169-pair sweep happened not to include.
+    Widening the test costs nothing, because a pair that agrees never
+    reaches this function.
     """
     begin = _resolve(start, 0, size)
     stop = _resolve(end, size, size)
@@ -102,7 +110,7 @@ def _explains_range(size: int, start: int | None, end: int | None) -> str | None
         return "range-entirely-past-eof"
     if begin < 0:
         return "range-start-before-the-beginning"
-    if stop < begin:
+    if stop <= begin:
         return "inverted-or-empty-range"
     return None
 

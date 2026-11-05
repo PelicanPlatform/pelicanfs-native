@@ -1,0 +1,200 @@
+# The generated export: every object the federation-backed fuzzers address.
+#
+# This file IS the fuzz corpus for object *names*.  Before it existed the
+# export was three hand-written objects, so a name was never an input to
+# anything; now the session builds the export from this manifest and both
+# implementations are asked to address every entry in it.
+#
+# It is checked in, and deliberately so: a differential harness whose
+# corpus is regenerated per run cannot reproduce its own findings.  A
+# name that breaks something goes in here and breaks it forever, on
+# every machine, including CI.  (docs/FUZZER-NOTES.md, "The corpus".)
+#
+# Fields:
+#   name   the object's path relative to the fuzz namespace root.
+#   size   bytes; the content is derived from the name, see export.py.
+#   note   why this name is interesting -- what layer treats it specially.
+#
+# Names are NOT filtered for hostility. A name that the harness cannot
+# turn into a local path is handled by never deriving a local path from
+# a name (see export.py), not by leaving the name out.
+
+# ------------------------------------------------------------------ #
+# Controls: ordinary names, so a failure elsewhere is not ambiguous.  #
+# ------------------------------------------------------------------ #
+[[object]]
+name = "plain.txt"
+size = 13
+note = "the control: nothing special about it"
+
+[[object]]
+name = "empty.txt"
+size = 0
+note = "zero bytes -- a range read has nothing to clamp against"
+
+[[object]]
+name = "one-byte.txt"
+size = 1
+note = "the smallest non-empty object"
+
+[[object]]
+name = "block.bin"
+size = 4096
+note = "one page, the usual read-block boundary"
+
+[[object]]
+name = "over-block.bin"
+size = 65537
+note = "one byte past 64 KiB: a partial final chunk"
+
+# ------------------------------------------------------------------ #
+# Characters that some layer between the caller and the origin reads  #
+# as syntax rather than as a name.                                    #
+# ------------------------------------------------------------------ #
+[[object]]
+name = "with space.txt"
+size = 7
+note = "a literal space: must be encoded in a URL, must not be in a path"
+
+[[object]]
+name = "literal%.txt"
+size = 7
+note = "a bare percent: the one character that makes a URL unparseable if it survives unencoded"
+
+[[object]]
+name = "a%zz.txt"
+size = 7
+note = "malformed percent-encoding that is a perfectly good file name"
+
+[[object]]
+name = "pct%25.txt"
+size = 7
+note = "a name that already looks encoded: decoding once gives a different object"
+
+[[object]]
+name = "hash#frag.txt"
+size = 7
+note = "'#' starts a fragment in a URL and is just a character in a name"
+
+[[object]]
+name = "question?q.txt"
+size = 7
+note = "'?' starts a query in a URL and is just a character in a name"
+
+[[object]]
+name = "plus+sign.txt"
+size = 7
+note = "'+' is a space in a query string and is not in a path"
+
+[[object]]
+name = "amp&eq=1.txt"
+size = 7
+note = "query syntax embedded in a name"
+
+[[object]]
+name = "semi;colon.txt"
+size = 7
+note = "an RFC 3986 path parameter separator"
+
+[[object]]
+name = "at@sign.txt"
+size = 7
+note = "'@' separates userinfo from host in an authority"
+
+[[object]]
+name = "colon:name.txt"
+size = 7
+note = "a colon makes a relative path look like it carries a scheme"
+
+[[object]]
+name = "back\\slash.txt"
+size = 7
+note = "a backslash is a separator on one platform and a name character here"
+
+[[object]]
+name = "quote'single.txt"
+size = 7
+note = "shell quoting, if anything ever shells out"
+
+[[object]]
+name = "star*name.txt"
+size = 7
+note = "a glob metacharacter in a literal name: glob() must not expand it"
+
+[[object]]
+name = "brack[et].txt"
+size = 7
+note = "a glob character class in a literal name"
+
+[[object]]
+name = "tab\tname.txt"
+size = 7
+note = "a control character: legal in a POSIX name, illegal in a URL"
+
+# ------------------------------------------------------------------ #
+# Shapes: dots, case, length, depth.                                  #
+# ------------------------------------------------------------------ #
+[[object]]
+name = ".hidden"
+size = 7
+note = "a leading dot, and no extension"
+
+[[object]]
+name = "..dotdot.txt"
+size = 7
+note = "leading dots that are NOT a parent reference -- a normalizer must not eat them"
+
+[[object]]
+name = "-leading-dash.txt"
+size = 7
+note = "looks like a command-line flag"
+
+[[object]]
+name = "CaseName.txt"
+size = 7
+note = "paired with casename.txt: the two differ only by case"
+
+[[object]]
+name = "casename.txt"
+size = 9
+note = "paired with CaseName.txt; dropped on a case-insensitive filesystem, see export.py"
+
+[[object]]
+name = "nfc-é.txt"
+size = 7
+note = "U+00E9, composed"
+
+[[object]]
+name = "nfd-é.txt"
+size = 7
+note = "e + U+0301, decomposed: the same grapheme, a different string"
+
+[[object]]
+name = "日本語.txt"
+size = 7
+note = "non-ASCII outside Latin-1"
+
+[[object]]
+name = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt"
+size = 7
+note = "a 250-byte name, just under the usual NAME_MAX of 255"
+
+[[object]]
+name = "dir with space/child.txt"
+size = 7
+note = "the space is in the collection, not the object"
+
+[[object]]
+name = "d1/d2/d3/d4/d5/deep.txt"
+size = 7
+note = "five levels: find() and walk() have to recurse"
+
+[[object]]
+name = "d1/sibling.txt"
+size = 7
+note = "a collection that holds both an object and a subcollection"
+
+[[object]]
+name = "pct%20dir/child.txt"
+size = 7
+note = "an encoded-looking collection name"

@@ -315,3 +315,94 @@ evidence = """
 ls('/test-namespace/subdir', detail=False) on an export whose subdir \
 holds exactly one file returns two entries.\
 """
+
+# --------------------------------------------------------------------- #
+# Found by the generated-name fuzzer (test/test_fuzz_names.py)          #
+# --------------------------------------------------------------------- #
+
+[exists-ignores-encoding]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+pelicanfs.exists() returns False for objects the same instance reads \
+correctly. Any name needing percent-encoding is affected -- a space, \
+a backslash, an apostrophe, '*', '[', a control character, any \
+non-ASCII -- because _exists hands urlparse(path).path, the raw \
+namespace path, straight to the WebDAV client, while cat_file goes \
+through the resolved data URL and is encoded on the way. So one \
+library says an object is not there and then reads it, which is worse \
+than either answer alone: a caller that guards a read with exists() \
+silently skips every object whose name has a space in it. 14 of the \
+33 objects in the generated export are affected.
+
+info() has the same fault from the same cause, and fails on the same \
+14 names. It is deliberately not pinned: info()'s WebDAV behaviour is \
+being rewritten upstream and findings against it are on hold, so the \
+name fuzzer absorbs the info() half by this key and asserts only the \
+exists() half. exists() is pinned because it is not part of that \
+rewrite's surface -- the fault is a missing percent-encode at the \
+call site, not the response-shape parsing -- so fixing the parsing \
+need not fix it.\
+"""
+evidence = """
+'/fuzz-namespace/with space.txt' exists on disk; \
+pelicanfs.cat_file returns its bytes and pelicanfs.exists returns \
+False, on fresh instances in either order. The native side returns \
+True. See test_exists_is_true_for_an_object_it_can_read and the \
+control next to it.\
+"""
+
+[native-rejects-a-literal-percent-in-a-name]
+blame = "pelicanfs-native"
+found = "2026-11-05"
+summary = """
+An object whose name holds a bare '%' -- 'literal%.txt', 'a%zz.txt' -- \
+can be stat'd by pelicanfs_native.info() and cannot be read by \
+pelicanfs_native.cat_file() or open(): the read raises \
+PelicanClientError 'failed to parse remote path ... invalid URL escape'. \
+pelicanfs reads both objects correctly, so this one belongs to the \
+native side. A control character in the name fails the same way \
+('invalid control character in URL'). _url() is not the culprit: it \
+escapes the name correctly ('literal%25.txt'), and the error text \
+echoes the UNESCAPED spelling back, so the escaping is undone \
+somewhere between _url() and pelican_fs_open. Which step undoes it is \
+not established here -- only that stat and open disagree about it \
+within one library.
+
+The sharper statement is that the native client's stat path and its \
+read path do not agree about names at all. Over the 34 objects of the \
+generated export it says seven exist and then cannot read them -- \
+every name holding '%', '#', '?' or a control character. pelicanfs is \
+in that state for two of them, 'pct%25.txt' and 'pct%20dir/child.txt', \
+names that already look encoded and that neither client round-trips, \
+so those two are a shared wart. The remaining five are the native \
+side's alone.\
+"""
+evidence = """
+native_fs._url('/fuzz-namespace/literal%.txt') ends in 'literal%25.txt'; \
+native_fs.info() on the same path returns size 7; native_fs.cat_file() \
+raises 'parse "pelican://host/fuzz-namespace/literal%.txt": invalid URL \
+escape "%.t"'. pelicanfs returns the seven bytes.\
+"""
+
+[native-listing-names-are-percent-encoded]
+blame = "pelicanfs-native"
+found = "2026-11-05"
+summary = """
+pelicanfs_native.ls() returns entry names in percent-encoded form -- \
+'/fuzz-namespace/dir%20with%20space', '/fuzz-namespace/pct%25.txt' -- \
+while every other method on the same filesystem takes and returns the \
+decoded namespace path. fsspec requires that a name ls() hands back \
+can be fed straight to info() or open(), and these cannot: feeding \
+'pct%25.txt' back names a different object, and 'dir%20with%20space' \
+names one that does not exist. This is the native-side mirror of \
+ls-names-are-endpoint-paths, which is pelicanfs's version of the same \
+contract break, and it was invisible until the export contained a \
+name that needed encoding at all.\
+"""
+evidence = """
+ls('/fuzz-namespace', detail=False) on the generated export returns \
+'/fuzz-namespace/%E6%97%A5%E6%9C%AC%E8%AA%9E.txt' for an object named \
+'日本語.txt', and exists() on that returned name is False. See \
+test_native_listing_names_are_addressable.\
+"""
