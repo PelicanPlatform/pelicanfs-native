@@ -140,12 +140,66 @@ Known divergences are recorded in
 `xfail(strict=True)`; see [Known divergences](#known-divergences) below.
 
 `PATH_SPELLINGS` in that module is a hand-written corpus of path
-spellings — the seed for a generative fuzzer. The oracle asserts only
-that both implementations reach the same verdict, so a new spelling can
-be added without deciding up front what it should mean. Path handling is
-the axis that has produced real `pelicanfs` bugs: namespace prefix
-matching on path boundaries, trailing-slash handling, and globbing over
-`pelican://` and `osdf://` URLs were all recent fixes.
+spellings. The oracle asserts only that both implementations reach the
+same verdict, so a new spelling can be added without deciding up front
+what it should mean. Path handling is the axis that has produced real
+`pelicanfs` bugs: namespace prefix matching on path boundaries,
+trailing-slash handling, and globbing over `pelican://` and `osdf://`
+URLs were all recent fixes.
+
+### The fuzzer
+
+That corpus is also the seed for a generative fuzzer, built on
+[Hypothesis](https://hypothesis.readthedocs.io/) and run by the ordinary
+`pytest` invocation above — there is nothing extra to start.
+
+| Module | Surface | Cost per example |
+| ------ | ------- | ---------------- |
+| `test/test_fuzz_paths.py` | the pure functions that turn a spelling into the object it denotes | microseconds |
+| `test/test_fuzz_operations.py` | `cat_file`, `info`, `exists`, `ls` against the live federation | a network round trip |
+
+`test/path_strategies.py` holds the grammar: schemes (including the
+`+native` aliases), hosts with and without ports, and path segments
+chosen because some layer — `urlsplit`, `PurePosixPath`, a prefix match,
+percent-decoding — treats them specially. Both modules state their
+oracle predicate in the module docstring, which matters because the two
+implementations' entry points do not have matching signatures and
+"agree" therefore has to be defined rather than assumed.
+
+Known divergences are absorbed by a function that names the responsible
+`KNOWN_DIVERGENCES.toml` key at the point of absorption, so the fuzzer
+fails only on differences nobody has written down. When it does fail it
+prints the spelling, the federation and both outcomes, and Hypothesis
+has already shrunk the spelling to the smallest one that still shows the
+difference.
+
+#### Running the long profile
+
+The default profile is sized for CI: a bounded number of examples and no
+per-example deadline, because these tests share a process with a Go
+runtime and a federation, so a time limit measures the machine. A `soak`
+profile runs the same tests far longer and is selected on the command
+line:
+
+```bash
+pytest --hypothesis-profile=soak test/test_fuzz_paths.py
+```
+
+That is minutes rather than seconds for the pure fuzzer, and much longer
+for `test_fuzz_operations.py`, which is real I/O — give it a target:
+
+```bash
+pytest --hypothesis-profile=soak -k "fuzz and not operations"
+```
+
+Both profiles live in `test/conftest.py`; one knob, `max_examples`,
+moves both phases, since the federation-backed tests derive their budget
+from it by `NETWORK_BUDGET_DIVISOR`.
+
+A failure found by the soak profile should be turned into a
+deterministic test before it is fixed. Hypothesis prints a
+`@reproduce_failure` blob, but that is tied to a Hypothesis version;
+the shrunk input in the assertion message is not.
 
 ## License
 

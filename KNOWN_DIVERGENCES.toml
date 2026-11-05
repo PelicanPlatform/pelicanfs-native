@@ -95,3 +95,91 @@ answers 416 while a local filesystem returns b'' -- so this one needs a \
 decision before either side is called wrong.\
 """
 evidence = "cat_file(path, 10000, 10010) on a 13-byte object."
+
+# --------------------------------------------------------------------- #
+# Found by the generative path fuzzer (test/test_fuzz_paths.py)         #
+# --------------------------------------------------------------------- #
+
+[osdf-two-slash-form-is-normalized]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+pelicanfs runs the sloppy two-slash form 'osdf://ns/obj' -- and only \
+that form -- through PurePosixPath, which collapses '.' segments and \
+repeated separators, so 'osdf://ns/./obj' and 'osdf://ns//obj' both \
+denote '/ns/obj'. The three-slash 'osdf:///ns/./obj' and every \
+'pelican://' spelling are passed through untouched, so one library \
+gives one object name two different normalizations depending on how \
+many slashes the caller typed. The native side never rewrites a \
+namespace path: the federation decides what '//' and '.' mean, not the \
+client.\
+"""
+evidence = """
+_check_fspath in pelicanfs/core.py: the osdf branch builds \
+str(PurePosixPath("/" + parsed.netloc + parsed.path)); no other branch \
+does. Over 150000 generated spellings this was the only unexplained \
+class of disagreement the direct front door produced.\
+"""
+
+
+[strip-protocol-loses-the-osdf-federation]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+pelicanfs has two path front doors that do not compose. \
+_check_fspath() reads 'osdf://ns/obj' as the OSDF federation and the \
+path '/ns/obj'; _strip_protocol() -- which fsspec's glob() and open() \
+call -- just removes the scheme, leaving 'ns/obj', which _check_fspath \
+then reads as the HOST 'ns'. So the same URL means a different \
+federation depending on which method the caller used: info() goes to \
+OSDF, glob() goes to a federation named after the first path \
+component, or raises InvalidMetadata if the filesystem is already \
+bound elsewhere. The native _strip_protocol returns a rooted namespace \
+path and is idempotent, so its two doors agree.\
+"""
+evidence = """
+PelicanFileSystem._strip_protocol('osdf://ns/obj') == 'ns/obj'; \
+feeding that back into _check_fspath yields path '/obj' on federation \
+'pelican://ns/'. test_native_path_front_doors_compose is the control \
+on the other side.\
+"""
+
+
+[path-rejection-exception-class]
+blame = "undecided"
+found = "2026-11-05"
+summary = """
+Refusing a path raises from unrelated hierarchies: the native side \
+raises ValueError, as fsspec backends and the standard library do for \
+a malformed argument, while pelicanfs raises PelicanException, which \
+derives from RuntimeError. A caller handling both implementations \
+cannot write one except clause. Which one is right is a judgement \
+call, so this is undecided rather than blamed -- but they should not \
+both stand.\
+"""
+evidence = """
+_check_fspath('s3://bucket/key') raises InvalidDestinationURL; \
+_split_url on the same string raises ValueError. The fuzzer's oracle \
+absorbs this deliberately, or it would mask every other rejection \
+difference.\
+"""
+
+
+[url-with-no-path-is-empty]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+'pelican://host', a URL with no path component, denotes the federation \
+root. pelicanfs's _check_fspath returns '' for it, and that empty \
+string is then concatenated into a director URL and matched against \
+namespace prefixes; the native side returns '/'. Adding the trailing \
+slash by hand ('pelican://host/') gives '/' from both, so the two \
+spellings of the root disagree with each other inside one library.\
+"""
+evidence = """
+_check_fspath('pelican://host') == '' while \
+_check_fspath('pelican://host/') == '/'. The fuzzer's canonical() \
+folds a trailing separator away on both sides, so only the dedicated \
+pin sees this.\
+"""
+
