@@ -241,13 +241,23 @@ way; see docs/FUZZER-NOTES.md.\
 blame = "pelicanfs"
 found = "2026-11-05"
 summary = """
-A range that selects nothing -- cat_file(path, 5, 5) or an inverted \
-cat_file(path, 5, 1) -- is b'' under slice semantics and that is what \
-the native client returns. pelicanfs builds 'bytes=5-4' and the origin \
-answers 416. A caller computing a range arithmetically hits the empty \
-case routinely, and an empty read is not an error.\
+An INVERTED range -- cat_file(path, 5, 1), where the end resolves \
+below the start -- is b'' under slice semantics and that is what the \
+native client returns. pelicanfs builds 'bytes=5-0' and the origin \
+answers 416. A caller computing a range arithmetically hits this case \
+routinely, and a range that selects nothing is not an error.
+
+A range whose bounds are merely EQUAL is not part of this: \
+cat_file(path, 5, 5) and cat_file(path, 0, 0) both return b'' from \
+both libraries. An earlier wording of this entry claimed they raised; \
+re-running the three pairs against pelicanfs 1.5.0 shows only the \
+inverted one does.\
 """
-evidence = "cat_file(path, 0, 0) raises on pelicanfs and returns b'' natively."
+evidence = """
+cat_file(path, 5, 1) on the 13-byte hello_world.txt raises \
+ClientResponseError 416 on pelicanfs and returns b'' natively; \
+cat_file(path, 5, 5) and cat_file(path, 0, 0) agree on b''.\
+"""
 
 [exists-raises-on-an-unusable-path]
 blame = "pelicanfs"

@@ -31,6 +31,10 @@ case "$(uname -m)" in
     *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
+# Bash 3.2 -- still the /bin/bash on macOS -- treats an empty array
+# expanded with [@] as an unbound variable under `set -u`, so both
+# curl calls below guard the expansion with the + form, which drops
+# the argument entirely when no token is set.
 auth=()
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
@@ -38,7 +42,7 @@ fi
 
 version="${PELICAN_VERSION:-}"
 if [[ -z "${version}" ]]; then
-    version=$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/${REPO}/releases/latest" \
+    version=$(curl -fsSL ${auth[@]+"${auth[@]}"} "https://api.github.com/repos/${REPO}/releases/latest" \
         | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
     if [[ -z "${version}" ]]; then
         echo "could not resolve the latest ${REPO} release; set PELICAN_VERSION" >&2
@@ -59,7 +63,7 @@ fetch_one() {
     local archive_name="$1" wrapper="$2" binary="$3"
     local url="https://github.com/${REPO}/releases/download/${version}/${archive_name}"
     echo "fetching ${url}" >&2
-    curl -fsSL "${auth[@]}" -o "${workdir}/${archive_name}" "${url}"
+    curl -fsSL ${auth[@]+"${auth[@]}"} -o "${workdir}/${archive_name}" "${url}"
     # Extract into its own empty directory: a release archive is
     # untrusted input and should not be unpacked over anything.
     local out="${workdir}/${wrapper}-extract"

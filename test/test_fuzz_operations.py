@@ -89,9 +89,12 @@ def _explains_range(size: int, start: int | None, end: int | None) -> str | None
     an empty range -- and the pre-existing register entry is checked
     first so the two new ones stay as narrow as what they describe.
 
-    Note what is *not* here: negative bounds as such.
-    ``cat_file(path, -5, -1)`` works on both.  The first reading of the
-    sweep said negatives were the problem and was wrong.
+    Note what is *not* here.  Negative bounds as such:
+    ``cat_file(path, -5, -1)`` works on both, and the first reading of
+    the sweep said negatives were the problem and was wrong.  Nor is a
+    range whose bounds are *equal*: ``cat_file(path, 5, 5)`` returns
+    ``b''`` from both, so only a strictly inverted range is absorbed --
+    equality is held to agreeing, which it does.
     """
     begin = _resolve(start, 0, size)
     stop = _resolve(end, size, size)
@@ -99,7 +102,7 @@ def _explains_range(size: int, start: int | None, end: int | None) -> str | None
         return "range-entirely-past-eof"
     if begin < 0:
         return "range-start-before-the-beginning"
-    if stop <= begin:
+    if stop < begin:
         return "inverted-or-empty-range"
     return None
 
