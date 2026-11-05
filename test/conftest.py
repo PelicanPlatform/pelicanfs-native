@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 from hypothesis import HealthCheck, settings as hypothesis_settings
 
-from fuzz_export import build_export, load_manifest
+from fuzz_export import build_export, load_manifest, tripwire_violations
 
 NAMESPACE = "/test-namespace"
 # A second namespace, backed by the generated export, so that the
@@ -536,11 +536,5 @@ def _containment_tripwire(tmp_path_factory: pytest.TempPathFactory):
     try:
         yield
     finally:
-        assert canary.exists(), f"the canary at {canary} was deleted"
-        assert canary.read_bytes() == payload, f"the canary at {canary} was modified"
-        after = {p.name: p.is_dir() for p in outside.iterdir()}
-        vanished = {n: k for n, k in before.items() if after.get(n) != k}
-        assert not vanished, (
-            f"entries just outside the session root changed or disappeared: "
-            f"{sorted(vanished)} under {outside}"
-        )
+        violations = tripwire_violations(outside, canary, payload, before)
+        assert not violations, "\n".join(violations)

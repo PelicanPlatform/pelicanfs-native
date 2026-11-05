@@ -48,9 +48,11 @@ the cache answered late.
 
 Deleting is the one case the once-only rule does not cover, because a
 delete necessarily makes an older version of the answer exist.  There
-the absolute claim is made against the export directory and the
-clients are only required to agree with *each other* -- see
-:meth:`FederationMachine.remove`.
+the claim is made against the export directory alone and the clients
+are not asked at all; two soaks established that they can both lag and
+disagree with each other after a delete while a fresh federation is
+consistent every time.  :meth:`FederationMachine.remove` carries the
+evidence and what the machine gives up for it.
 
 **Hostile names.**  Writes use a small plain alphabet plus one name
 with a space.  The hostile-name axis belongs to
@@ -85,7 +87,6 @@ from hypothesis.stateful import (
     RuleBasedStateMachine,
     consumes,
     invariant,
-    precondition,
     rule,
     run_state_machine_as_test,
 )
@@ -346,6 +347,19 @@ class FederationMachine(RuleBasedStateMachine):
     # ---------------------------------------------------------------- #
     # Reads                                                            #
     # ---------------------------------------------------------------- #
+    #
+    # No @precondition anywhere below, deliberately. A precondition on
+    # self.model makes a rule's *availability* depend on whether an
+    # earlier write succeeded, and against a live federation that is
+    # external state: a soak died with
+    #
+    #   FlakyStrategyDefinition: Inconsistent data generation! ...
+    #   The second run drew more data than the first run.
+    #
+    # because a replay took a different branch and so drew a different
+    # amount. Rules that need a path take one from the bundle, whose
+    # emptiness Hypothesis models itself; rules that look at the run
+    # root as a whole return early when it is empty.
 
     @rule(path=paths)
     def read(self, path):
@@ -444,7 +458,6 @@ class FederationMachine(RuleBasedStateMachine):
         if pure is not True:
             self.absorb("exists-ignores-encoding")
 
-    @precondition(lambda self: self.model)
     @rule()
     def listing(self):
         """``ls`` of the run root must report the same members.
@@ -458,6 +471,8 @@ class FederationMachine(RuleBasedStateMachine):
         reading the disk rather than comparing two opinions.
         """
         _fired("listing")
+        if not self.disk_root.is_dir():
+            return
         expected = sorted(p.name for p in self.disk_root.iterdir())
         native = _leaves(self.native.ls(self.root, detail=False), self.run)
         try:
@@ -470,11 +485,12 @@ class FederationMachine(RuleBasedStateMachine):
         if pure is not None:
             assert pure == expected, f"pelicanfs ls() says {pure}, disk says {expected}"
 
-    @precondition(lambda self: self.model)
     @rule()
     def find_everything(self):
         """``find`` must reach every object the run has written."""
         _fired("find_everything")
+        if not self.disk_root.is_dir():
+            return
         # Files on disk, not the model: find() reports objects, and an
         # empty collection left behind by a delete is not one.
         expected = sorted(

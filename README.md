@@ -157,14 +157,41 @@ That corpus is also the seed for a generative fuzzer, built on
 | ------ | ------- | ---------------- |
 | `test/test_fuzz_paths.py` | the pure functions that turn a spelling into the object it denotes | microseconds |
 | `test/test_fuzz_operations.py` | `cat_file`, `info`, `exists`, `ls` against the live federation | a network round trip |
+| `test/test_fuzz_names.py` | the same operations over an export of hostile object *names* | a network round trip |
+| `test/test_fuzz_stateful.py` | *sequences* of operations against one instance of each library | a sequence of round trips |
 
 `test/path_strategies.py` holds the grammar: schemes (including the
 `+native` aliases), hosts with and without ports, and path segments
 chosen because some layer — `urlsplit`, `PurePosixPath`, a prefix match,
-percent-decoding — treats them specially. Both modules state their
-oracle predicate in the module docstring, which matters because the two
+percent-decoding — treats them specially. Each module states its oracle
+predicate in its docstring, which matters because the two
 implementations' entry points do not have matching signatures and
 "agree" therefore has to be defined rather than assumed.
+
+Three things are worth knowing before reading a green run.
+
+**Ground truth.** The test origin is `Origin.StorageType: posixv2` over
+a real directory, so the federation-backed fuzzers compare each
+library's answer against what is actually on disk rather than only
+against each other. That is what says which implementation is *wrong*,
+and in practice it has mostly said the harness was.
+
+**The corpora are checked in.** `test/corpus/export.toml` is the
+manifest the export is built from — names with spaces, `%`, `#`, `?`,
+`+`, control characters, non-ASCII, 250-byte names, case-only variants,
+five levels of nesting, sizes from 0 to 64 KiB.
+`test/corpus/path_spellings.toml` is every shrunk counterexample and one
+spelling per register entry. Hypothesis's own example database is local
+and gitignored, so anything worth keeping lives in these instead; they
+are replayed deterministically and also seed the generators.
+
+**Containment.** The fuzzers generate hostile names on purpose, so the
+harness never derives a local path from one: local files are named by a
+hash, the one place a real name reaches the filesystem is
+`realpath`-checked, and a canary outside the session root is verified at
+teardown. `test/test_containment.py` exercises all of it. For extra
+distance, `scripts/fuzz-in-container.sh` runs the suite in a container
+with the working tree mounted read-only.
 
 Known divergences are absorbed by a function that names the responsible
 `KNOWN_DIVERGENCES.toml` key at the point of absorption, so the fuzzer
@@ -186,11 +213,26 @@ pytest --hypothesis-profile=soak test/test_fuzz_paths.py
 ```
 
 That is minutes rather than seconds for the pure fuzzer, and much longer
-for `test_fuzz_operations.py`, which is real I/O — give it a target:
+for the federation-backed modules, which are real I/O — give them a
+target:
 
 ```bash
 pytest --hypothesis-profile=soak -k "fuzz and not operations"
+scripts/fuzz-in-container.sh --hypothesis-profile=soak test/test_fuzz_stateful.py
 ```
+
+The state machine is the one most worth soaking: at `soak` it runs 666
+sequences of up to 50 steps in about 90 seconds, and several of its
+findings only appear once the federation has been up long enough for
+the cache to start serving. A short green run of it says less than it
+looks like it does.
+
+One test is soak-only: `test_denotation_agrees_under_targeted_search`,
+which replaces unavailable coverage-guided fuzzing (atheris does not
+build on either platform this is developed on — see
+`docs/FUZZER-NOTES.md`) with Hypothesis's `target()`. It is skipped by
+default because it can spend sixty times the wall clock for a few
+points of acceptance rate.
 
 Both profiles live in `test/conftest.py`; one knob, `max_examples`,
 moves both phases, since the federation-backed tests derive their budget

@@ -655,3 +655,48 @@ Soak, for reference: the stateful machine at `--hypothesis-profile=soak`
 is 666 examples of up to 50 steps and runs in roughly 90 seconds. Each
 of the four soaks run during this round found something in that time;
 three were harness faults and one is the held `info()` finding above.
+
+## `@precondition` and a live backend do not mix
+
+A later soak died with
+
+```
+hypothesis.errors.FlakyStrategyDefinition: Inconsistent data generation!
+Data generation behaved differently between test cases.
+The second run drew more data than the first run.
+```
+
+`listing` and `find_everything` carried `@precondition(lambda self:
+self.model)`. That makes a rule's *availability* depend on whether an
+earlier write succeeded, and against a live federation whether a write
+succeeded is external state: a replay that took a different branch
+drew a different amount and Hypothesis, rightly, refused to believe
+either run.
+
+There are no preconditions left. Rules that need a path take one from
+a `Bundle`, whose emptiness Hypothesis models itself; rules that look
+at the run root as a whole return early when it is empty. The general
+rule for a state machine over a network service: let the bundle decide
+availability, never a predicate over state the service can change
+underneath you.
+
+## Controls that can be seen failing
+
+`test/test_containment.py` exercises the safety machinery itself, with
+no federation and in a tenth of a second:
+
+* `contained()` accepts the root and its children; rejects a sibling
+  with a shared prefix (`/tmp/foo2` against `/tmp/foo`, the classic
+  way a prefix check is wrong); rejects traversal; and follows
+  symlinks out of the root, which is what `realpath` on both sides
+  buys.
+* `opaque_local_name()` is shown to be untraversable for seven hostile
+  spellings, *and* the naive `os.path.join` is asserted to escape for
+  the same inputs — so if the demonstration ever stops demonstrating
+  anything, the test says so rather than passing quietly.
+* `build_export()` drops `../outside.txt` and `sub/../../escape.txt`
+  and the files are asserted absent afterwards.
+* `tripwire_violations()` is quiet when work stays inside the session
+  root and fires on a modified canary, a deleted canary and a vanished
+  neighbour. It was extracted from the fixture for exactly this: a
+  check nobody has ever watched fail is a comment.

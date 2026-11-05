@@ -185,3 +185,36 @@ def build_export(root: Path, objects: list[ExportObject]) -> tuple[list[ExportOb
             pass
         dropped.append(obj.name)
     return survivors, sorted(dropped)
+
+
+# --------------------------------------------------------------------- #
+# The tripwire                                                          #
+# --------------------------------------------------------------------- #
+
+
+def tripwire_violations(
+    outside: Path, canary: Path, payload: bytes, before: dict[str, bool]
+) -> list[str]:
+    """What changed just outside the session root, if anything.
+
+    A separate function and not an inline assertion in the fixture so
+    that it can be unit-tested.  The containment argument in this
+    module is only as good as the thing that would notice it being
+    wrong, and a check nobody has ever seen fail is not that.
+    """
+    problems = []
+    if not canary.exists():
+        problems.append(f"the canary at {canary} was deleted")
+    elif canary.read_bytes() != payload:
+        problems.append(f"the canary at {canary} was modified")
+    try:
+        after = {p.name: p.is_dir() for p in outside.iterdir()}
+    except OSError as exc:
+        return [*problems, f"{outside} is no longer readable: {exc}"]
+    vanished = sorted(n for n, kind in before.items() if after.get(n) != kind)
+    if vanished:
+        problems.append(
+            f"entries just outside the session root changed or disappeared: "
+            f"{vanished} under {outside}"
+        )
+    return problems
