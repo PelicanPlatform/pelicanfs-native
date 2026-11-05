@@ -121,6 +121,11 @@ def _config(root: Path, export_dir: Path, ports: dict[str, int]) -> str:
           StorageLocation: {root}/cache-data
         Registry:
           DbLocation: {root}/registry.sqlite
+        Xrootd:
+          # The graceful drain before shutdown, 1m by default. Nothing is
+          # draining in a test federation, and waiting it out at session
+          # teardown dominated the suite's runtime.
+          ShutdownTimeout: "0s"
         """)
 
 
@@ -328,9 +333,12 @@ def federation(tmp_path_factory: pytest.TempPathFactory) -> Federation:
         sys.stderr.write(_tail(log_file) + "\n")
         raise
     finally:
+        # Escalate quickly: a test federation has nothing worth draining,
+        # and a server that has not gone down in a few seconds is not
+        # about to.
         proc.terminate()
         try:
-            proc.wait(timeout=30)
+            proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=30)
