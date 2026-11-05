@@ -116,6 +116,10 @@ eval "$(scripts/fetch-pelican.sh .pelican-bin >/dev/null && echo \
 pytest -v
 ```
 
+CI runs this on Linux and macOS against a pinned Pelican release
+(`PELICAN_VERSION` in the workflow), building `libpelicanclient` from
+pelican-c `main` so that header drift shows up as a compile error.
+
 TLS verification stays on throughout: the harness hands the federation's
 generated CA to the Go client via `PELICAN_SERVER_TLSCACERTIFICATEFILE`
 and to Python via `SSL_CERT_FILE`. Disabling verification would hide

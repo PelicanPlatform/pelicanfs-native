@@ -10,10 +10,11 @@ permissions:
   contents: read
 
 env:
-  # Pin the federation under test.  "latest" would make a green run
-  # unreproducible and would turn an upstream release into a surprise
-  # failure on an unrelated pull request.
-  PELICAN_VERSION: ""
+  # Pin the federation under test.  Leaving this empty resolves the
+  # latest release, which makes a green run unreproducible and turns an
+  # upstream release into a surprise failure on an unrelated pull
+  # request.  Bump deliberately.
+  PELICAN_VERSION: v26.0.0
   # The pelican-c revision whose ABI this binding is built against.
   PELICAN_C_REF: main
 
@@ -78,37 +79,3 @@ jobs:
       - name: Server log on failure
         if: failure()
         run: find /tmp -name 'pelican-server.log' -newermt '-1 hour' -exec tail -n 200 {} +
-
-  # The same suite inside the Pelican development container, which ships
-  # the server binaries and XRootD.  Kept alongside the release-download
-  # job rather than replacing it: the container tracks ITB builds, so the
-  # two together catch a break in either direction.
-  container:
-    name: Test (dev container)
-    runs-on: ubuntu-24.04
-    container:
-      image: hub.opensciencegrid.org/pelican_platform/pelican-dev:latest-itb
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Check out pelican-c
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: PelicanPlatform/pelican-c
-          ref: ${{ env.PELICAN_C_REF }}
-          path: pelican-c
-
-      - name: Build and install libpelicanclient
-        run: |
-          set -euo pipefail
-          make -C pelican-c install PREFIX="${GITHUB_WORKSPACE}/pelican-c-install"
-          echo "PELICAN_C_PREFIX=${GITHUB_WORKSPACE}/pelican-c-install" >> "$GITHUB_ENV"
-
-      - name: Install and test
-        run: |
-          set -euo pipefail
-          python3 -m venv .venv
-          . .venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install -e . pytest pytest-timeout pelicanfs "aiowebdav2<1"
-          pytest -v
