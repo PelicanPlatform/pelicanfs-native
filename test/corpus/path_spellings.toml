@@ -1,0 +1,193 @@
+# The path-spelling corpus.
+#
+# Two jobs, and the first is why the file is checked in.
+#
+# 1. REGRESSION. Every spelling here is replayed on every run, by
+#    test_corpus_spellings_agree in test_fuzz_paths.py, as ordinary
+#    parametrized cases. Hypothesis's example database is a local
+#    cache: it lives in .hypothesis/, it is gitignored, and a find on
+#    one developer's laptop is not reproducible on anyone else's, let
+#    alone in CI. Anything the fuzzer shrinks to and anything a
+#    register entry rests on belongs here instead, where it runs
+#    forever on every machine.
+#
+# 2. SEEDING. The generator draws from this list as well as from its
+#    grammar, so the search starts from inputs already known to be
+#    interesting rather than from scratch each run.
+#
+# Fields:
+#   value  the spelling, exactly as a caller would write it.
+#   note   why it is here: the register entry it belongs to, the
+#          mutation it caught, or the shape it covers.
+
+# ------------------------------------------------------------------ #
+# Shrunk counterexamples. Each of these is what Hypothesis reduced a  #
+# planted bug to; they are the smallest inputs that distinguish a     #
+# correct implementation from a broken one, so they are the most      #
+# valuable regressions in the file.                                   #
+# ------------------------------------------------------------------ #
+[[spelling]]
+value = "example.org//a"
+note = "shrunk from the planted bug '_strip_protocol collapses // to /'"
+
+[[spelling]]
+value = "osdf:///"
+note = "shrunk from the planted bug '_split_url forgets the federation in a URL'"
+
+# ------------------------------------------------------------------ #
+# One spelling per register entry, so an entry always has a concrete  #
+# input behind it even if the generator never redraws it.             #
+# ------------------------------------------------------------------ #
+[[spelling]]
+value = "osdf://osg-htc.org/./obj"
+note = "osdf-two-slash-form-is-normalized: the '.' is collapsed, and only here"
+
+[[spelling]]
+value = "osdf://osg-htc.org//obj"
+note = "osdf-two-slash-form-is-normalized: the '//' likewise"
+
+[[spelling]]
+value = "osdf:///ns/./obj"
+note = "the three-slash form, which is NOT normalized -- the other half of that entry"
+
+[[spelling]]
+value = "osdf://ns/obj"
+note = "strip-protocol-loses-the-osdf-federation"
+
+[[spelling]]
+value = "pelican://example.org:8443/ns/obj"
+note = "strip-protocol-rejects-a-port"
+
+[[spelling]]
+value = "pelican://user:pass@example.org/ns/obj"
+note = "strip-protocol-rejects-a-port, userinfo form"
+
+[[spelling]]
+value = "pelican://example.org"
+note = "url-with-no-path-is-empty: '' from _check_fspath, '/' from the native side"
+
+[[spelling]]
+value = "pelican://example.org/"
+note = "url-with-no-path-is-empty: the spelling that does give '/' on both"
+
+[[spelling]]
+value = "s3://bucket/key"
+note = "path-rejection-exception-class: ValueError against PelicanException"
+
+[[spelling]]
+value = "localhost:1/ns/obj"
+note = "exists-raises-on-an-unusable-path: urlparse reads 'localhost' as a scheme"
+
+# ------------------------------------------------------------------ #
+# Shapes: the structural axes that have broken path handling before.  #
+# ------------------------------------------------------------------ #
+[[spelling]]
+value = "/ns/obj"
+note = "the control"
+
+[[spelling]]
+value = "/ns/obj/"
+note = "a trailing separator, which _strip_protocol drops and _check_fspath keeps"
+
+[[spelling]]
+value = "//ns/obj"
+note = "a doubled leading separator"
+
+[[spelling]]
+value = "/ns/./obj"
+note = "a '.' segment: the federation decides what it means, not the client"
+
+[[spelling]]
+value = "/ns/../obj"
+note = "a '..' segment, deliberately not filtered out anywhere"
+
+[[spelling]]
+value = "/ns//obj"
+note = "an empty interior segment"
+
+[[spelling]]
+value = "/"
+note = "the root"
+
+[[spelling]]
+value = ""
+note = "the empty spelling"
+
+[[spelling]]
+value = "pelican+native://example.org/ns/obj"
+note = "the +native alias, which must mean what pelican:// means"
+
+[[spelling]]
+value = "example.org/ns/obj"
+note = "the schemeless host-first form some libraries construct"
+
+[[spelling]]
+value = "[::1]:8443/ns/obj"
+note = "a bracketed IPv6 authority"
+
+[[spelling]]
+value = "pelican://xn--bcher-kva.example/ns/obj"
+note = "a punycode host"
+
+[[spelling]]
+value = "pelican://bücher.example/ns/obj"
+note = "the same host spelled in Unicode"
+
+# ------------------------------------------------------------------ #
+# Characters a layer reads as syntax.                                 #
+# ------------------------------------------------------------------ #
+[[spelling]]
+value = "/ns/%2F/obj"
+note = "an encoded separator: decoding it changes the path's shape"
+
+[[spelling]]
+value = "/ns/%/obj"
+note = "a stray percent"
+
+[[spelling]]
+value = "/ns/a%zz"
+note = "malformed percent-encoding"
+
+[[spelling]]
+value = "/ns/a?q=1"
+note = "a query marker inside what the caller means as a name"
+
+[[spelling]]
+value = "/ns/a#f"
+note = "a fragment marker likewise"
+
+[[spelling]]
+value = "/ns/a;p=1"
+note = "an RFC 3986 path parameter"
+
+[[spelling]]
+value = "/ns/a:b"
+note = "a colon, which makes a relative path look schemed"
+
+[[spelling]]
+value = "/ns/a\\b"
+note = "a backslash, which is not a separator here"
+
+[[spelling]]
+value = "/ns/a b"
+note = "a literal space"
+
+[[spelling]]
+value = "/ns/a+b"
+note = "'+' is a space in a query and is not in a path"
+
+[[spelling]]
+value = "/ns/é"
+note = "NFC"
+
+[[spelling]]
+value = "/ns/é"
+note = "NFD: the same grapheme, a different string"
+
+[[spelling]]
+value = "/ns/Ａ"
+note = "fullwidth 'A', which NFKC would fold to 'A'"
+
+[[spelling]]
+value = "/ns/\t"
+note = "a control character"

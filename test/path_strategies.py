@@ -18,7 +18,28 @@ report rather than a wall of noise.
 
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 from hypothesis import strategies as st
+
+CORPUS = Path(__file__).resolve().parent / "corpus" / "path_spellings.toml"
+
+
+def corpus_spellings() -> list[str]:
+    """The checked-in corpus of interesting spellings.
+
+    Every shrunk counterexample the fuzzer has produced, and one
+    spelling per register entry.  Hypothesis's own example database is
+    a local, gitignored cache -- a find on one laptop is not
+    reproducible on another, let alone in CI -- so anything worth
+    keeping is kept here instead.
+    """
+    raw = tomllib.loads(CORPUS.read_text())
+    return [entry["value"] for entry in raw["spelling"]]
+
+
+CORPUS_SPELLINGS = corpus_spellings()
 
 # Schemes.  The ``+native`` aliases exist because the two distributions
 # must not claim the same fsspec protocol name (see the README); a
@@ -108,7 +129,7 @@ def namespace_paths(draw, *, min_size: int = 0, max_size: int = 4) -> str:
 
 
 @st.composite
-def spellings(draw) -> str:
+def generated_spellings(draw) -> str:
     """A whole path spelling, as a caller might write it.
 
     Covers the four shapes that reach these functions in the wild: a
@@ -135,3 +156,16 @@ def spellings(draw) -> str:
 def federation_hosts() -> st.SearchStrategy[str]:
     """A host to bind the filesystem under test to."""
     return st.sampled_from(HOSTS)
+
+
+def spellings() -> st.SearchStrategy[str]:
+    """The grammar, seeded from the checked-in corpus.
+
+    The corpus comes first in the union so that Hypothesis, which
+    shrinks a ``one_of`` towards its first branch, reduces a failure to
+    a corpus entry where one will do -- a known-interesting spelling
+    with a note attached beats an equivalent one the generator happened
+    to build.  It also means the search starts from inputs already
+    known to matter instead of rediscovering them every run.
+    """
+    return st.one_of(st.sampled_from(CORPUS_SPELLINGS), generated_spellings())

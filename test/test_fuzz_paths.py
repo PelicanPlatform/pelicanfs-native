@@ -71,12 +71,12 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import given, settings, target
 from hypothesis import strategies as st
 
 from pelicanfs_native.core import PelicanNativeFileSystem
 
-from path_strategies import HOSTS, spellings
+from path_strategies import CORPUS_SPELLINGS, HOSTS, spellings
 from test_differential import reason
 
 pytestmark = pytest.mark.differential
@@ -451,3 +451,124 @@ def test_url_with_no_path_denotes_the_root():
     fs = PelicanFileSystem.__new__(PelicanFileSystem)
     fs.discovery_url = "pelican://example.org/"
     assert fs._check_fspath("pelican://example.org") == "/"
+
+
+# --------------------------------------------------------------------- #
+# The persistent corpus                                                 #
+# --------------------------------------------------------------------- #
+#
+# Hypothesis keeps the inputs it finds in .hypothesis/, which is a local
+# cache and gitignored: a failure found on one machine is not
+# reproducible on another, and nothing it learns survives into CI. So
+# every shrunk counterexample, and one spelling per register entry,
+# lives in test/corpus/path_spellings.toml instead and is replayed here
+# as ordinary parametrized cases -- deterministically, on every run,
+# forever. The generator also draws from the same list (see
+# path_strategies.spellings), so the search starts from them rather
+# than rediscovering them.
+
+
+@pytest.mark.parametrize("spelling", CORPUS_SPELLINGS)
+@pytest.mark.parametrize("host", ["example.org", "osg-htc.org"])
+def test_corpus_spellings_agree(spelling, host):
+    """The generative property, pinned to the corpus and never redrawn."""
+    federation = f"pelican://{host}"
+    native = native_denotation(spelling, federation)
+    pure = pelicanfs_denotation(spelling, federation)
+    if native == pure:
+        return
+    key = _explained_by(spelling, native, pure)
+    assert key is not None, (
+        "unexplained divergence on a corpus spelling."
+        + _report(spelling, federation, native, pure)
+    )
+
+
+def test_the_corpus_is_loaded_and_covers_the_register():
+    """A corpus that quietly failed to load would make the above vacuous."""
+    assert len(CORPUS_SPELLINGS) >= 30, CORPUS_SPELLINGS
+    # The two shrunk counterexamples the mutation checks produced are
+    # the most valuable entries in the file; losing them would be
+    # silent otherwise.
+    assert "example.org//a" in CORPUS_SPELLINGS
+    assert "osdf:///" in CORPUS_SPELLINGS
+
+
+# --------------------------------------------------------------------- #
+# Targeted search, in place of coverage guidance                        #
+# --------------------------------------------------------------------- #
+#
+# The obvious thing to do with three pure, fast, I/O-free functions is
+# to put libFuzzer behind them, and the obvious tool is atheris.
+# Atheris does not work here, which was checked rather than assumed:
+#
+#   * PyPI has no wheel for this project's interpreter on either
+#     machine it was tried on. atheris 3.1.0 publishes exactly three
+#     wheels, all manylinux x86_64 (cp312, cp313, cp314); the macOS
+#     host is arm64/cp314 and the Linux container is aarch64/cp311, so
+#     pip falls back to the 3.0.0 sdist on both.
+#   * Building that sdist fails on both with "Failed to find libFuzzer;
+#     you may be building using Apple Clang" -- it needs a clang built
+#     with compiler-rt, which neither environment has and which the
+#     project is not going to make a test dependency.
+#
+# So there is no coverage feedback available, and the honest
+# substitute is Hypothesis's target(): an explicit objective in place
+# of an implicit one. Most of the input space is a mutual rejection --
+# a 40 000-example sweep found 31 895 of them differing only in
+# exception class -- and an example both sides reject exercises almost
+# none of the path semantics, so the objective rewards mutual
+# acceptance and, among the accepted, depth.
+#
+# How well that works was measured rather than assumed, three
+# repetitions of 4 000 examples each, in the container:
+#
+#   rep0 plain    4000 examples  28.0% accepted  mean depth 3.62    7.6s
+#   rep0 targeted  388 examples  51.3% accepted  mean depth 5.69  462.5s
+#   rep1 plain    4000 examples  31.9% accepted  mean depth 3.68    7.3s
+#   rep1 targeted 4000 examples  32.9% accepted  mean depth 4.42    7.6s
+#   rep2 plain    4000 examples  30.2% accepted  mean depth 3.83    6.2s
+#   rep2 targeted 4000 examples  34.5% accepted  mean depth 4.39   13.3s
+#
+# The verdict is "a little, unreliably". Targeting lifts the
+# acceptance rate by one to four points and the mean depth by about
+# 0.7, which is worth having in a long hunt; but one run in three
+# spent sixty times the wall clock to get through a tenth of the
+# budget, and in that run the plain search saw five times as many
+# mutually-accepted examples in a hundredth of the time. So this is
+# a soak-profile test and not a default one: it is not worth a
+# minute-long tail risk on every push for a few points of acceptance
+# rate.
+
+
+SOAK = PURE_EXAMPLES > 10_000
+
+
+@pytest.mark.skipif(
+    not SOAK,
+    reason="targeted search is soak-only: it can spend 60x the wall clock "
+           "for a few points of acceptance rate (see the measurements above)",
+)
+@settings(max_examples=PURE_EXAMPLES // 10, deadline=None)
+@given(spellings(), st.sampled_from(HOSTS))
+def test_denotation_agrees_under_targeted_search(spelling, host):
+    """The same property, searched towards the productive region."""
+    federation = f"pelican://{host}"
+    native = native_denotation(spelling, federation)
+    pure = pelicanfs_denotation(spelling, federation)
+
+    if native[0] == "ok" and pure[0] == "ok":
+        # Accepted by both: the only examples where a difference in
+        # path *semantics* can show. Depth is the secondary score, so
+        # the search does not settle on '/' and stop.
+        target(1.0 + min(native[1].count("/"), 8), label="mutually addressable")
+    else:
+        target(0.0, label="mutually addressable")
+
+    if native == pure:
+        return
+    key = _explained_by(spelling, native, pure)
+    assert key is not None, (
+        "unexplained divergence found by targeted search."
+        + _report(spelling, federation, native, pure)
+    )

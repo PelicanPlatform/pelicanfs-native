@@ -293,3 +293,365 @@ flake check.
   explicit atom list. Random text finds encoding bugs; what has actually
   broken pelicanfs is structural, and an explicit list shrinks to
   something a human can read.
+
+---
+
+# Round two: stateful testing, generated names, a corpus
+
+Working notes from the second round (branch `fuzzer-stateful`). The
+first round fuzzed the inputs to a single call; this round fuzzes
+sequences, fuzzes the names the federation holds, and makes the
+findings survive the machine that found them.
+
+## What was built
+
+| File | What it is |
+| ---- | ---------- |
+| `test/corpus/export.toml` | the object-name corpus: the export is built from it |
+| `test/corpus/path_spellings.toml` | the path-spelling corpus: replayed, and seeds the generator |
+| `test/fuzz_export.py` | builds the export; the containment rules |
+| `test/fuzz_oracle.py` | shared reduction and absorption for the federation-backed fuzzers |
+| `test/test_fuzz_names.py` | phase 3, differential fuzzing of object names |
+| `test/test_fuzz_stateful.py` | phase 4, the `RuleBasedStateMachine` |
+
+`conftest.py` gained a second namespace, `/fuzz-namespace`, built from
+the manifest and separate from the fixed three-object export, so the
+fuzzers can create and delete without disturbing the hand-written
+tests.
+
+## Three views, and which one is the truth
+
+The oracle is no longer two opinions. The test origin is
+`Origin.StorageType: posixv2` over a real directory, so after any
+operation the harness can walk `federation.fuzz_export_dir` and see
+what the federation actually holds. Every mutation is checked against
+it, and the stateful machine's invariant compares model, disk and
+libraries after every step.
+
+This is not a tie-break. It says which implementation is *wrong*, and
+twice in this round it said the **harness** was wrong, which a
+two-sided comparison could not have:
+
+* `listing()` computed its expectation from the model, and a soak
+  failed with `native ls() says ['00-a.txt', 'sub'], disk says
+  ['00-a.txt']`. Deleting the only object in a collection leaves the
+  empty collection behind on the origin, so `ls` was right and the
+  model was incomplete. The rule now reads the directory.
+* `find_everything()` had the same fault, fixed the same way.
+
+## The cache, decided rather than tolerated
+
+`Cache.EnableV2` means a read after a write can legitimately serve a
+stale answer. The decision, in two parts:
+
+**Writes.** Every path the machine writes is written exactly once.
+There is then no earlier version of an object for anything to serve,
+so no retry loop is needed and none exists. The cost is that
+overwrites cannot be explored by the machine, which is fine because
+the two implementations disagree about what an overwrite *means* (see
+`put-file-overwrites-on-one-side-only`) and a shared model stops being
+possible after the first one. That divergence is pinned
+deterministically instead.
+
+**Deletes.** A delete necessarily creates a stale answer, so the
+once-only rule does not cover it. Two soaks settled what to do:
+
+1. The first asserted both clients report the object gone. It failed
+   at run 266: `native.exists()` still True, object gone from disk.
+2. The second weakened that to "the two must agree with each other".
+   It failed at run 298: native True, pelicanfs False.
+
+The same write/delete/exists sequence on a freshly started federation
+is consistent **six times out of six**, so this is staleness that
+appears once the federation has been under load — and a differential
+assertion cannot settle it, because the two clients do not necessarily
+resolve to the same tier for the same object. So the delete is
+verified against the export directory, which cannot be stale, and the
+clients are not asked. Retrying until they agree was the alternative
+and is worse: it turns a client that never notices a delete into a
+slow pass.
+
+Both of these only appear in a soak. Short runs route to the origin;
+by run 266 the federation has been up long enough for the cache to be
+in play. That is worth knowing before reading any short green run as
+evidence of much.
+
+## Containment: the dangerous direction is local, not remote
+
+The fuzzer generates hostile object names on purpose. The remote side
+is a throwaway federation on loopback; the danger is the *harness*
+turning a remote name into a local path. `os.path.join(dest,
+"/etc/passwd")` is `"/etc/passwd"` and `Path("/a") / "/etc/passwd"` is
+`Path("/etc/passwd")`, so one generated `..` or leading separator in a
+recursive `get` destination is enough.
+
+Four controls, in order of precedence:
+
+1. **No local path is ever derived from a generated name.** Local
+   files are named by `opaque_local_name()`, a hash. Traversal is not
+   filtered, it is unrepresentable. This is the control that matters;
+   the rest are belt and braces.
+2. **Containment checks** where a real name must reach the filesystem
+   — building the export, which has to create the hostile names.
+   `contained()` compares `realpath`s with a trailing separator,
+   because a bare `startswith` passes `/tmp/foo2` as inside
+   `/tmp/foo`, and it is re-checked after creation in case a symlink
+   appeared.
+3. **Nothing is filtered out of the corpus.** `..`, a leading
+   separator and control characters are exactly the inputs worth
+   sending remotely. Filtering them would hide the bug class.
+4. **A tripwire**: a canary file and a directory snapshot just outside
+   the session root, checked at teardown. A control nobody can see
+   fail is not a control.
+
+Mutations are additionally guarded: `guard_mutation()` asserts the
+path resolves to the test federation before any write or delete.
+`osdf://` resolves to the real production OSDF, so this is not
+hypothetical. `rm` is restricted to paths the model created.
+
+Runs are made through `scripts/fuzz-in-container.sh`, which mounts the
+tree read-only.
+
+## Generated names: what the export now holds
+
+34 names (33 on a case-insensitive volume, where `casename.txt` and
+`CaseName.txt` collide; `build_export` detects the collision, keeps
+the first, and reports the casualty, and
+`test_the_export_is_what_the_manifest_asked_for` asserts the casualty
+list is only ever that pair). Sizes 0, 1, 7, 4096 and 65537.
+
+Results, with the export directory as the reference:
+
+| | native | pelicanfs |
+| - | ------ | --------- |
+| `cat_file` fails | 7 of 34 | 5 of 34 |
+| `exists` wrong | 0 | 14 of 34 (says False, then reads them) |
+| `exists`/`cat` self-inconsistent | 7 | 2 |
+
+Three entries came out of it, all outside the held `info()`/`ls()`
+family: `exists-ignores-encoding`,
+`native-rejects-a-literal-percent-in-a-name` and
+`native-listing-names-are-percent-encoded`.
+
+A drafting mistake worth recording, because it is the same mistake the
+first round made twice. The first version of the exists/read
+self-consistency test asserted pelicanfs was clean and the native side
+was not. It was run on macOS, where the probe stopped at the first
+mismatch, and it was wrong: pelicanfs is inconsistent about
+`pct%25.txt` and `pct%20dir/child.txt` too. Both sets are measured now
+and the pin asserts only the difference — five names the native side
+adds on its own.
+
+Likewise `fuzz_oracle.explains_exists` originally tried to decide from
+the spelling which names need percent-encoding. It could not:
+`amp&eq=1.txt` and `at@sign.txt` survive while `quote'single.txt` does
+not, so the predicate was a list of observations pretending to be a
+rule. It keys on the disagreement against ground truth instead — the
+object is on disk, one library finds it, the other says it is not
+there — which needs no rule and cannot drift.
+
+## Findings held back
+
+**`info()` builds a cache URL with the host spliced into the path.**
+The first stateful soak failed on a fresh pelicanfs instance's *first*
+call, having requested
+
+```
+https://localhost:37951/api/v1.0/cache/data/localhost:37951/fuzz-namespace/run-529/00-a.txt
+```
+
+— the cache endpoint with the federation host inside the path, the
+same shape as `strip-protocol-rejects-a-port`. Two reasons it is not
+in the register. It is `info()`, whose WebDAV layer is being rewritten
+upstream and whose findings are on hold. And it does not reproduce
+from the shrunk two-step sequence on a fresh federation: a plain
+write-then-stat works, with a correct `origin/data/...` URL. It needed
+500-odd machine runs of accumulated federation state. Registering it
+on a reproduction nobody else can run would be the third time this
+project asserted a mechanism from a symptom.
+
+The machine therefore absorbs **any** `FileNotFoundError` from
+pelicanfs's `info()` on an object the export directory holds, under
+`info-is-stateful`, not just the post-first-call case. The cost is
+stated in the code and is real: the machine can no longer find an
+`info()` bug at all. That is the price of the hold, and the comment
+says to narrow it back when the hold lifts.
+
+**Exception classes on an unreachable object.** Both libraries fail to
+read `semi;colon.txt`, `hash#frag.txt`, `question?q.txt` and
+`pct%25.txt`; they raise `PelicanFileNotFoundError`,
+`FileNotFoundError` and `NoAvailableSource` in various pairings. The
+name oracle compares *reachability* and not the exception class, which
+is deliberate: holding mutually-unreachable names to a shared class
+would turn every shared wart into a finding, and the class question is
+already `path-rejection-exception-class`'s. Recorded here rather than
+registered.
+
+**pelicanfs silently drops a control character.** `tab\tname.txt`
+reaches the origin as `tabname.txt` on the pelicanfs side. Both
+libraries fail to read the object, so there is no reachability
+divergence to pin; noted because a silently rewritten name is a
+different kind of wrong from a refused one.
+
+## The persistent corpus
+
+Hypothesis's example database lives in `.hypothesis/`, is gitignored,
+and is a local cache: a find on one laptop is not reproducible on
+another and never reaches CI. Two checked-in corpora replace it for
+the inputs worth keeping.
+
+* `test/corpus/export.toml` — the export manifest. The federation is
+  built from it, so every name in it is exercised by three sweeps on
+  every run.
+* `test/corpus/path_spellings.toml` — 37 spellings: both shrunk
+  counterexamples from the round-one mutation checks, one spelling per
+  register entry, and the structural and syntactic shapes. Replayed
+  deterministically by `test_corpus_spellings_agree` against two
+  federations, and unioned into `spellings()` so the generator starts
+  from them. The corpus branch is first in the `one_of` so that
+  Hypothesis, which shrinks towards the first branch, reduces to a
+  corpus entry where one will do.
+
+`test_the_corpus_is_loaded_and_covers_the_register` and
+`test_the_manifest_covers_the_classes_it_claims` exist because a
+corpus that silently failed to load would make all of that vacuous —
+the same failure mode as round one's `test_the_fuzzer_reaches_every_shape`.
+
+## atheris: checked, and not usable
+
+The three pure path functions are ideal libFuzzer targets, so atheris
+was the obvious tool. It does not work here, and this was established
+by running it rather than by reading release notes:
+
+* **No wheel.** atheris 3.1.0 publishes exactly three wheels, all
+  `manylinux2014_x86_64` (cp312, cp313, cp314). The development host
+  is macOS arm64 / cp314 and the container is Linux aarch64 / cp311,
+  so pip falls back to the 3.0.0 sdist on both.
+* **The sdist does not build**, on either, with:
+
+  ```
+  RuntimeError: Failed to find libFuzzer; you may be building using Apple Clang.
+  ```
+
+  It needs a clang built with compiler-rt. macOS has only Apple Clang
+  and no Homebrew LLVM on this machine; the container has only the
+  Debian system clang. Building LLVM from source is not a reasonable
+  test dependency.
+
+So: **no coverage-guided fuzzing**, and the fallback is Hypothesis's
+`target()`, measured rather than assumed. See the table in
+`test_fuzz_paths.py`. Summary: targeting lifts the mutual-acceptance
+rate from ~30% to ~33% and the mean path depth from 3.7 to 4.4, which
+is worth having in a long hunt — but one run in three spent **sixty
+times** the wall clock to get through a tenth of the budget, and in
+that run the plain search saw five times as many interesting examples
+in a hundredth of the time. It is therefore a soak-profile test and
+not a default one. Calling that a success would be rounding up.
+
+## The state machine that explored nothing
+
+The first version passed in 2.3 seconds and was close to vacuous. The
+instrumentation added to check said so:
+
+```
+these rules never fired: ['classify', 'find_everything', 'read']
+fired: {'check': 1, 'check_absent': 24, 'download': 1, 'listing': 4,
+        'read_through_open': 1, 'remove': 2, 'stat': 3, 'write': 4}
+```
+
+24 of 40 steps went to `check_absent`, the one rule needing no bundle
+entry and therefore available at every step, including the early ones
+where nothing had been written yet. Two fixes: an `@initialize` that
+seeds one object so the bundle rules are reachable from step one, and
+folding `check_absent` into `check` as a boolean so it stops competing
+for the schedule.
+
+The coverage guarantee then moved to `test_every_rule_runs`, which
+calls every rule once in a fixed order. Asserting per-rule coverage
+over a random schedule would only have converted the problem into a
+flake; the deterministic test gives the guarantee and doubles as a
+smoke test, and the Hypothesis run asserts only that it was not
+vacuous.
+
+This is the third time in this project that an instrument reported
+green while measuring nothing, after round one's zero-disagreement
+sweep and its missing `osg-htc.org` host. It will not be the last;
+the habit of asserting that the generator reached what it claims to
+reach is the only thing that has caught it.
+
+## Divergences recorded this round
+
+| Key | Blame | Pinned by |
+| --- | ----- | --------- |
+| `exists-ignores-encoding` | pelicanfs | `test_exists_is_true_for_an_object_it_can_read` |
+| `native-rejects-a-literal-percent-in-a-name` | pelicanfs-native | `test_native_reads_a_name_holding_a_literal_percent`, `test_neither_side_claims_an_object_it_cannot_read` |
+| `native-listing-names-are-percent-encoded` | pelicanfs-native | `test_native_listing_names_are_addressable` |
+| `put-file-overwrites-on-one-side-only` | undecided | `test_rewrite_disagrees` |
+| `write-surface-is-asymmetric` | undecided | `test_the_write_surfaces_are_disjoint` |
+
+One existing absorption was widened rather than a new entry added:
+`_explains_range` now treats `stop <= begin` as empty, because a later
+seed drew `cat_file(path, None, 0)`. An explicit `(0, 0)` does agree —
+`inverted-or-empty-range` says so and it is still true — but
+`(None, 0)` resolves to the same empty range and answers 416 on
+pelicanfs, so pelicanfs's behaviour on one range depends on whether
+the caller named the start.
+
+## The write surface, measured
+
+Against the same writable origin, same token, same config:
+
+| | native | pelicanfs |
+| - | ------ | --------- |
+| `put_file` | works | works |
+| `put_file` over an existing object | `PelicanFileExistsError` | overwrites |
+| `pipe_file` | works | `aiohttp InvalidUrlClientError` |
+| `rm_file` | works | `NotImplementedError` |
+| `touch` | works | `NotImplementedError` |
+| `makedirs` | `NotImplementedError` | returns, creates nothing |
+
+`put_file` being the only mutation both implement is why it is the
+state machine's only mutation. The `pipe_file` mechanism is in
+pelicanfs's `__init__`: `self._pipe_file = self.http_file_system._pipe_file`
+binds HTTPFileSystem's bound method, so `_check_fspath` is never
+reached and the namespace path goes to aiohttp as a URL. The
+`makedirs` row is why every assertion in that pin is against the
+export directory and not against a return value.
+
+## Timings
+
+Measured in the container (`scripts/fuzz-in-container.sh -q`), which
+is where every number in this round was taken:
+
+| | Before this round | After |
+| - | ----------------- | ----- |
+| Result | 97 passed, 21 xfailed | 178 passed, 1 skipped, 23 xfailed |
+| Wall clock | 18.9 s | 35.7 s |
+
+Where the time goes, slowest first:
+
+```
+8.79s  test_fuzz_paths.py::test_denotation_agrees
+6.15s  test_fuzz_paths.py::test_native_strip_protocol_is_idempotent
+4.82s  test_fuzz_paths.py::test_native_strip_protocol_returns_a_rooted_path
+3.23s  test_fuzz_paths.py::test_native_path_front_doors_compose
+2.69s  (federation startup)
+1.00s  test_fuzz_stateful.py::test_a_sequence_of_operations_agrees
+0.76s  test_fuzz_names.py::test_neither_side_claims_an_object_it_cannot_read
+0.55s  test_fuzz_names.py::test_cat_file_agrees_on_every_name
+```
+
+Almost none of the increase is the new work: the stateful machine
+costs a second and the three name sweeps under two between them. It
+is the **pure** path fuzzers, which roughly doubled. Seeding
+`spellings()` from the corpus is why — a corpus spelling is far more
+likely to be *accepted* than a randomly generated one, and an accepted
+spelling does more work on both sides than a rejected one. That is the
+intended effect rather than overhead, so it was left alone.
+
+The skipped test is the targeted search, which is soak-only.
+
+Soak, for reference: the stateful machine at `--hypothesis-profile=soak`
+is 666 examples of up to 50 steps and runs in roughly 90 seconds. Each
+of the four soaks run during this round found something in that time;
+three were harness faults and one is the held `info()` finding above.
