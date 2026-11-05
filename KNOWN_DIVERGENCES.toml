@@ -406,3 +406,58 @@ ls('/fuzz-namespace', detail=False) on the generated export returns \
 '日本語.txt', and exists() on that returned name is False. See \
 test_native_listing_names_are_addressable.\
 """
+
+# --------------------------------------------------------------------- #
+# Found by the stateful fuzzer (test/test_fuzz_stateful.py)             #
+# --------------------------------------------------------------------- #
+
+[put-file-overwrites-on-one-side-only]
+blame = "undecided"
+found = "2026-11-05"
+summary = """
+Writing twice to one path: pelicanfs replaces the object, the native \
+client refuses with PelicanFileExistsError ('remote object already \
+exists, upload aborted'). Same federation, same token, same config. \
+fsspec's put_file is documented to overwrite and callers rely on it, \
+which argues for pelicanfs; the native client is honouring Pelican's \
+Client.EnableOverwrites, which defaults to false precisely so a \
+transfer cannot destroy data by accident, which argues for it. Both \
+positions are defensible and they cannot both stand, so this is \
+undecided rather than blamed. It is here because only a *sequence* \
+finds it -- one put_file agrees on both sides, and nothing in the \
+harness drove two.\
+"""
+evidence = """
+put_file(a, p) then put_file(b, p): the export directory holds a's \
+bytes after the native pair and b's after the pelicanfs pair. See \
+test_rewrite_disagrees.\
+"""
+
+[write-surface-is-asymmetric]
+blame = "undecided"
+found = "2026-11-05"
+summary = """
+The two implement disjoint halves of fsspec's write API against the \
+same writable origin, so put_file is the only mutation both can \
+perform. pelicanfs implements _put_file only; it binds \
+self._pipe_file to HTTPFileSystem's bound method in __init__ (core.py \
+'self._pipe_file = self.http_file_system._pipe_file'), which skips \
+_check_fspath, so pipe_file hands a bare namespace path to aiohttp and \
+raises InvalidUrlClientError rather than writing or refusing cleanly; \
+rm_file falls through to AsyncFileSystem's NotImplementedError; touch \
+hits open()'s refusal of write modes; makedirs inherits fsspec's \
+silent no-op, which reports success and creates nothing. The native \
+side implements pipe_file, rm_file and touch, and refuses makedirs \
+explicitly because a Pelican namespace has no directory creation. A \
+caller cannot write code that mutates a federation through both.\
+"""
+evidence = """
+On the same path and federation: pipe_file -- native writes, \
+pelicanfs raises aiohttp InvalidUrlClientError from \
+fsspec/implementations/http.py; rm_file -- native deletes (confirmed \
+in the export directory), pelicanfs raises NotImplementedError from \
+fsspec/asyn.py:464; makedirs -- native raises NotImplementedError, \
+pelicanfs returns and nothing appears on disk; touch -- native \
+creates the object, pelicanfs raises NotImplementedError. See \
+test_the_write_surfaces_are_disjoint.\
+"""
