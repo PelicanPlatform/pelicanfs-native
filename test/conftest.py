@@ -32,7 +32,6 @@ import pytest
 NAMESPACE = "/test-namespace"
 STARTUP_TIMEOUT_S = 120.0
 
-
 @dataclass(frozen=True)
 class Federation:
     """Everything a client needs to reach the test federation."""
@@ -354,9 +353,25 @@ def _client_trust(federation: Federation):
     }
     os.environ["SSL_CERT_FILE"] = federation.ca_file
     os.environ["BEARER_TOKEN_FILE"] = federation.token_file
+
+    # aiohttp builds its default verified context once, at import time
+    # of aiohttp.connector, so a module that imported it before this
+    # fixture ran has already snapshotted a trust store without the
+    # federation's generated CA -- and the CA cannot exist any earlier,
+    # since the server generates it during startup. Rebuilding it here
+    # is what keeps the suite's result from depending on which test
+    # module happened to import pelicanfs first; adding a module-level
+    # `import pelicanfs.core` to one test file was enough to make 38
+    # tests fail with CERTIFICATE_VERIFY_FAILED.
+    connector = sys.modules.get("aiohttp.connector")
+    cached_context = getattr(connector, "_SSL_CONTEXT_VERIFIED", None)
+    if cached_context is not None:
+        connector._SSL_CONTEXT_VERIFIED = ssl.create_default_context()
     try:
         yield
     finally:
+        if cached_context is not None:
+            connector._SSL_CONTEXT_VERIFIED = cached_context
         for key, value in previous.items():
             if value is None:
                 os.environ.pop(key, None)
