@@ -17,3 +17,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+# Hypothesis's example database: it is a local cache of failing inputs,
+# useful between runs on one machine and meaningless in a repository.
+.hypothesis/

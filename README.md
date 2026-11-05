@@ -106,7 +106,9 @@ protocol twice, once per client, and the mock would become the thing
 under test.
 
 ```bash
-pip install -e . pytest pytest-timeout pelicanfs "aiowebdav2<1"
+# The 'differential' group: pytest, pelicanfs, hypothesis and the
+# aiowebdav2 pin. Needs pip >= 25.1 for --group.
+pip install -e . --group differential
 
 # Point at a Pelican release (or put the binaries on PATH)
 eval "$(scripts/fetch-pelican.sh .pelican-bin >/dev/null && echo \

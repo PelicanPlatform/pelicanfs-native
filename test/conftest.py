@@ -28,9 +28,44 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from hypothesis import HealthCheck, settings as hypothesis_settings
 
 NAMESPACE = "/test-namespace"
 STARTUP_TIMEOUT_S = 120.0
+
+# --------------------------------------------------------------------- #
+# Hypothesis profiles                                                   #
+# --------------------------------------------------------------------- #
+#
+# Registered at import time, before the Hypothesis pytest plugin's
+# pytest_configure runs, so that --hypothesis-profile=soak still wins.
+#
+# max_examples is the budget for the *pure* path fuzzer, where an
+# example costs microseconds. The federation-backed fuzzer runs real
+# network round trips at roughly a hundred times the cost, and scales
+# itself down by NETWORK_BUDGET_DIVISOR so that one knob moves both.
+NETWORK_BUDGET_DIVISOR = 100
+
+# deadline=None throughout: these tests share a process with a Go
+# runtime and, in phase two, with a federation, so a per-example time
+# limit measures the machine rather than the code. A deadline flake is
+# noise that trains people to rerun.
+hypothesis_settings.register_profile(
+    "ci",
+    max_examples=1500,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+    print_blob=True,
+)
+hypothesis_settings.register_profile(
+    "soak",
+    max_examples=200_000,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+    print_blob=True,
+)
+hypothesis_settings.load_profile("ci")
+
 
 @dataclass(frozen=True)
 class Federation:

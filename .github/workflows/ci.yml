@@ -59,10 +59,16 @@ jobs:
       - name: Install pelicanfs-native and both test implementations
         run: |
           set -euo pipefail
+          # --group needs pip >= 25.1.
           python -m pip install --upgrade pip
-          # The 'differential' extra brings in pelicanfs, the pure-Python
-          # implementation this one is compared against.
-          python -m pip install -e . pytest pytest-timeout pelicanfs "aiowebdav2<1"
+          # The 'differential' dependency group brings in pelicanfs -- the
+          # pure-Python implementation this one is compared against -- and
+          # hypothesis for the fuzzer. Naming the group rather than
+          # repeating its contents is deliberate: the previous spelling
+          # listed the packages here and the comment above them already
+          # claimed to be using the group, and adding hypothesis to
+          # pyproject would silently not have reached CI.
+          python -m pip install -e . --group differential
 
       - name: Fetch the pelican-server binary
         run: |
