@@ -59,11 +59,20 @@ blame = "pelicanfs"
 found = "2026-11-05"
 summary = """
 pelicanfs._ls_real calls int(item['size']) on every entry, and a \
-collection's PROPFIND size property is empty, so listing any collection \
-that contains a subdirectory raises ValueError: invalid literal for \
-int() with base 10: ''. The native side lists it fine.\
+collection's PROPFIND size property is empty, so ls(detail=True) \
+raises ValueError: invalid literal for int() with base 10: ''. \
+Originally read as "a collection containing a subdirectory"; the \
+fuzzer sharpened it to EVERY collection, because the listing also \
+echoes the collection itself (see ls-echoes-the-collection-itself) and \
+that entry is a collection whatever it contains. ls(detail=False) \
+survives, since the size is only parsed for the detailed form. The \
+native side lists either way.\
 """
-evidence = "ls() or find() on a namespace containing any subdirectory."
+evidence = """
+ls('/ns/subdir', detail=True) raises even though subdir holds one \
+file and no subdirectory; ls('/ns/subdir', detail=False) returns a \
+list. find() and walk() go through the detailed form.\
+"""
 
 [info-type]
 blame = "pelicanfs"
@@ -121,7 +130,6 @@ does. Over 150000 generated spellings this was the only unexplained \
 class of disagreement the direct front door produced.\
 """
 
-
 [strip-protocol-loses-the-osdf-federation]
 blame = "pelicanfs"
 found = "2026-11-05"
@@ -144,6 +152,25 @@ feeding that back into _check_fspath yields path '/obj' on federation \
 on the other side.\
 """
 
+[strip-protocol-rejects-a-port]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+The same non-composing front doors, with a sharper edge: \
+_strip_protocol('pelican://host:8443/ns/obj') returns \
+'host:8443/ns/obj', and urlparse reads 'host' as a scheme, so \
+_check_fspath raises InvalidDestinationURL("Invalid scheme: host"). \
+Every pelicanfs method that strips first therefore fails against any \
+federation whose discovery URL carries a port -- glob() is the one in \
+the public API, and the same applies to a userinfo form such as \
+pelican://user:pass@host/. A federation on a non-default port is \
+normal in testing and not unusual in production.\
+"""
+evidence = """
+glob() on the test federation, which runs on an ephemeral port: \
+pelicanfs raises while the native client lists the objects. See \
+test_glob_agrees_on_a_ported_federation.\
+"""
 
 [path-rejection-exception-class]
 blame = "undecided"
@@ -164,7 +191,6 @@ absorbs this deliberately, or it would mask every other rejection \
 difference.\
 """
 
-
 [url-with-no-path-is-empty]
 blame = "pelicanfs"
 found = "2026-11-05"
@@ -183,3 +209,99 @@ folds a trailing separator away on both sides, so only the dedicated \
 pin sees this.\
 """
 
+# --------------------------------------------------------------------- #
+# Found by the federation-backed fuzzer (test/test_fuzz_operations.py)  #
+# --------------------------------------------------------------------- #
+
+[range-start-before-the-beginning]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+fsspec documents cat_file's start and end as Python slice bounds, and \
+a slice clamps: data[-20:-5] on 13 bytes is data[0:8]. The native \
+client clamps the same way. pelicanfs turns the resolved offset into \
+an HTTP Range header without clamping, the origin answers 416 and \
+aiohttp raises ClientResponseError.
+
+Negative offsets are NOT the problem, which is worth stating because \
+the first reading of the sweep said they were: cat_file(path, -5, -1) \
+works on both. It is specifically a start that resolves below zero, \
+i.e. a negative start further back than the object is long -- which is \
+what a caller computing "the last N bytes" of an object smaller than N \
+produces.\
+"""
+evidence = """
+cat_file(path, -20, -5) on the 13-byte hello_world.txt: b'Hello, W' \
+natively, 416 on pelicanfs. 22 of the 169 (start, end) pairs swept \
+over [None, -20, -14, -13, -5, -1, 0, 1, 5, 12, 13, 14, 20] fail this \
+way; see docs/FUZZER-NOTES.md.\
+"""
+
+[inverted-or-empty-range]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+A range that selects nothing -- cat_file(path, 5, 5) or an inverted \
+cat_file(path, 5, 1) -- is b'' under slice semantics and that is what \
+the native client returns. pelicanfs builds 'bytes=5-4' and the origin \
+answers 416. A caller computing a range arithmetically hits the empty \
+case routinely, and an empty read is not an error.\
+"""
+evidence = "cat_file(path, 0, 0) raises on pelicanfs and returns b'' natively."
+
+[exists-raises-on-an-unusable-path]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+exists() asks a question and should answer it. fsspec's \
+AbstractFileSystem.exists catches everything and returns False, which \
+the native side inherits; pelicanfs overrides _exists and lets \
+_check_fspath's InvalidDestinationURL escape. So a caller sweeping a \
+list of candidate paths gets False from one spelling and an exception \
+from the next, for inputs that are equally unusable. Both libraries \
+agree the path names nothing -- they differ only in how exists() says \
+so, which is the part fsspec pins.\
+"""
+evidence = """
+exists('s3://bucket/key') returns False natively and raises \
+InvalidDestinationURL on pelicanfs. The fuzzer found it through the \
+schemeless host-first form against the test federation, whose \
+ephemeral port makes 'localhost:63371/ns/obj' parse as a URL with the \
+scheme 'localhost' -- a form both libraries document and neither can \
+then address, which is a separate, shared wart.\
+"""
+
+[ls-names-are-endpoint-paths]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+ls(detail=False) names every entry by the resolved origin endpoint \
+path -- '/api/v1.0/origin/data/ns/obj' -- instead of the namespace \
+path '/ns/obj'. fsspec requires that a name ls() returns can be handed \
+straight back to open() or info(), and these cannot. Same root cause \
+as info-name-is-the-endpoint-path, recorded separately because it is a \
+different method, reached by a different code path, and pinned by a \
+different test; fixing one need not fix the other.\
+"""
+evidence = """
+ls('/test-namespace/subdir', detail=False) returns \
+['/api/v1.0/origin/data/test-namespace/subdir/', \
+'/api/v1.0/origin/data/test-namespace/subdir/nested.txt'].\
+"""
+
+[ls-echoes-the-collection-itself]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+A listing includes the collection that was listed, so ls('/ns/subdir') \
+returns '/ns/subdir/' alongside its contents. That is the raw WebDAV \
+PROPFIND Depth:1 shape passed through; fsspec's ls() is the contents \
+of a directory, and the native side drops the self-entry for the \
+stated reason that find() and walk() would otherwise recurse forever. \
+It is also what makes ls-crashes-on-a-subcollection fire on every \
+collection rather than only nested ones.\
+"""
+evidence = """
+ls('/test-namespace/subdir', detail=False) on an export whose subdir \
+holds exactly one file returns two entries.\
+"""
