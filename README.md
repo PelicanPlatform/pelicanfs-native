@@ -133,9 +133,9 @@ never in either library — each should implement the fsspec contract as
 directly as it can, and bending one to match the other's quirks is how a
 differential oracle stops finding anything.
 
-Known divergences are declared in `KNOWN_DIVERGENCES` and marked
-`xfail(strict=True)`, so the suite stays green while a divergence lasts
-and fails loudly the day it is fixed and the entry goes stale.
+Known divergences are recorded in
+[`KNOWN_DIVERGENCES.toml`](KNOWN_DIVERGENCES.toml) and pinned by
+`xfail(strict=True)`; see [Known divergences](#known-divergences) below.
 
 `PATH_SPELLINGS` in that module is a hand-written corpus of path
 spellings — the seed for a generative fuzzer. The oracle asserts only
@@ -149,43 +149,30 @@ matching on path boundaries, trailing-slash handling, and globbing over
 
 Apache 2.0. See [LICENSE](LICENSE).
 
-## Findings so far
+## Known divergences
 
-The oracle found these on its first run against a real federation. Each
-is recorded in `KNOWN_DIVERGENCES` and pinned by an `xfail(strict=True)`
-test, so the suite stays green until the divergence is fixed and then
-fails to tell us the entry is stale.
+Every place the two implementations disagree is recorded in
+[`KNOWN_DIVERGENCES.toml`](KNOWN_DIVERGENCES.toml), which is the single
+source of truth: `test/test_differential.py` loads it and uses each
+entry's summary as the reason on an `xfail(strict=True)`, so an entry
+cannot drift from the test that pins it. Two guards keep the register
+honest — `test_register_is_well_formed` checks the schema, and
+`test_register_has_no_stale_entries` fails if an entry stops being
+pinned, so a fixed divergence cannot quietly become folklore.
 
-1. **`pelicanfs.info()` poisons its own instance.** The first `info()`
-   call on a `PelicanFileSystem` succeeds; every later one on that
-   instance raises `FileNotFoundError`. Each object stats fine as the
-   first call on a genuinely fresh instance and fails as the second.
-   This bites every real caller, because fsspec keys its instance cache
-   on the storage options and hands the same instance to everyone using
-   the same federation.
-2. **`pelicanfs.info()["name"]` is not addressable.** It returns the
-   endpoint path it was answered from
-   (`/api/v1.0/origin/data/ns/obj`) rather than the namespace path. That
-   name cannot be passed back to `open()` or `ls()`, which the fsspec
-   contract requires. The underlying library echoes the same endpoint
-   path from `stat`, so this is a wart passed through rather than
-   normalized.
-3. **`pelicanfs.ls()` crashes on a collection containing a
-   subdirectory**, with `ValueError: invalid literal for int() with base
-   10: ''` — it calls `int(item["size"])` on every entry, and a
-   collection's PROPFIND size property is empty.
-4. **`pip install pelicanfs` is currently broken.** pelicanfs 1.5.0
-   calls `aiowebdav2`'s `info` and `list_with_infos`, which aiowebdav2
-   1.0.0 removed, and the dependency is declared with no upper bound.
-   `ls()` and `info()` raise `AttributeError` on a fresh install. This
-   repo pins `aiowebdav2 <1` as a workaround.
-5. **A read entirely past EOF** returns `b''` from the native client and
-   raises from pelicanfs. fsspec does not pin this — HTTP answers 416
-   while a local filesystem returns `b''` — so it needs a decision
-   before either side is called wrong.
-6. **`info()` never reports a collection** from pelicanfs: `type` is
-   hardcoded to `"file"`.
+Because the xfails are strict, the suite stays green while a divergence
+lasts and **fails the day it is fixed**. That is the signal to delete
+the entry, not a regression.
 
-Divergence 2 is also why `pelicanfs_native` derives entry names from the
-path the caller asked for rather than from what the library echoes; see
-`_entry` in `core.py`.
+Six divergences were recorded on the oracle's first run against a real
+federation. The most serious: the first `pelicanfs.info()` call on a
+filesystem instance succeeds and every later one raises
+`FileNotFoundError`, which hits every real caller because fsspec hands
+the same cached instance to everyone using the same federation. See the
+register for the rest, each with its blame and how to reproduce it.
+
+Separately, and not a divergence: `pip install pelicanfs` is currently
+broken. pelicanfs 1.5.0 calls `aiowebdav2`'s `info` and
+`list_with_infos`, which aiowebdav2 1.0.0 removed, and the dependency is
+declared with no upper bound, so `ls()` and `info()` raise
+`AttributeError` on a fresh install. This repo pins `aiowebdav2 <1`.

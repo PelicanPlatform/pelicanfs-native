@@ -9,69 +9,71 @@ should implement the fsspec contract as directly as it can; bending one
 to match the other's quirks is how a differential oracle stops finding
 anything.  What survives :func:`normalize` is a real difference.
 
-Known divergences are declared in ``KNOWN_DIVERGENCES`` and marked
-xfail(strict=True), so the suite stays green while a divergence lasts
-and fails loudly the day it is fixed and the entry goes stale.
+Known divergences live in ``KNOWN_DIVERGENCES.toml`` at the repository
+root, and each is pinned here by an xfail(strict=True) whose reason is
+that entry's summary.  The suite therefore stays green while a
+divergence lasts and fails the day it is fixed, which is the signal to
+delete the entry.
 """
 
 from __future__ import annotations
 
 import datetime
+import tomllib
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 pytestmark = pytest.mark.differential
 
+REGISTER = Path(__file__).resolve().parent.parent / "KNOWN_DIVERGENCES.toml"
+KNOWN_DIVERGENCES = tomllib.loads(REGISTER.read_text())
 
-# Each entry: why the two differ today, and which side we believe.
-KNOWN_DIVERGENCES = {
-    "info-type": (
-        "pelicanfs._info hardcodes type='file' and never reports a "
-        "collection, while the native client has IsCollection. The native "
-        "side is right; pelicanfs needs a fix."
-    ),
-    "info-mtime-shape": (
-        "pelicanfs reports mtime as an unparsed string from _info and as a "
-        "datetime under the key 'modified' from _ls; the native side reports "
-        "an int epoch. fsspec does not pin this, but one class should not "
-        "use two shapes."
-    ),
-    "info-name-is-the-endpoint-path": (
-        "pelicanfs._info returns the name it was ANSWERED from -- "
-        "'/api/v1.0/origin/data/ns/obj' -- rather than the namespace path "
-        "'/ns/obj' the caller asked for. That name cannot be handed back to "
-        "open() or ls(), which the fsspec contract requires. The underlying "
-        "library echoes the same endpoint path from stat, so pelicanfs is "
-        "passing a wart through where pelicanfs_native normalizes it; "
-        "pelicanfs needs the fix."
-    ),
-    "ls-crashes-on-a-subcollection": (
-        "pelicanfs._ls_real does int(item['size']) on every entry, and a "
-        "collection's PROPFIND size property is empty, so listing any "
-        "collection that contains a subdirectory raises "
-        "ValueError: invalid literal for int() with base 10: ''. "
-        "A clear pelicanfs bug; the native side lists it fine."
-    ),
-    "info-is-stateful": (
-        "The first pelicanfs info() on a filesystem instance succeeds and "
-        "every later one on that instance raises FileNotFoundError. Each "
-        "object stats fine as the first call on a genuinely fresh instance "
-        "and fails as the second, so the state is per-instance: the first "
-        "call caches a resolved endpoint URL that is then reused for "
-        "unrelated paths -- the same endpoint path info() hands back as the "
-        "object's name. This bites every real caller, because fsspec keys "
-        "its instance cache on the storage options and hands the same "
-        "PelicanFileSystem to everyone with the same federation. The most "
-        "serious finding here, and a pelicanfs bug."
-    ),
-    "range-entirely-past-eof": (
-        "A read whose whole range lies past the end of the object: the "
-        "native client returns b'', pelicanfs raises. fsspec does not pin "
-        "this -- HTTP would answer 416 while a local filesystem returns b'' "
-        "-- so this one needs a decision before either side is called wrong."
-    ),
-}
+# Which entries this module actually pins. Populated at import time,
+# because xfail markers are applied during collection, so by the time
+# any test runs every reason() call has already happened.
+_pinned: set[str] = set()
+
+
+def reason(key: str) -> str:
+    """The xfail reason for a registered divergence.
+
+    Going through here rather than indexing the dict directly is what
+    lets test_register_has_no_stale_entries notice an entry that no
+    test pins any more.
+    """
+    entry = KNOWN_DIVERGENCES[key]
+    _pinned.add(key)
+    return f"[{key}, blame={entry['blame']}] {entry['summary'].strip()}"
+
+
+def test_register_is_well_formed():
+    """Every entry carries the fields the register documents."""
+    assert KNOWN_DIVERGENCES, f"no divergences loaded from {REGISTER}"
+    for key, entry in KNOWN_DIVERGENCES.items():
+        missing = {"summary", "blame", "found"} - set(entry)
+        assert not missing, f"{key} is missing {sorted(missing)}"
+        assert entry["blame"] in {
+            "pelicanfs",
+            "pelicanfs-native",
+            "upstream",
+            "undecided",
+        }, f"{key} has an unknown blame {entry['blame']!r}"
+
+
+def test_register_has_no_stale_entries():
+    """An entry no test pins is a divergence nobody is watching.
+
+    This fires when a divergence is fixed and its xfail is deleted but
+    the entry is left behind, which would otherwise quietly become
+    folklore.
+    """
+    stale = set(KNOWN_DIVERGENCES) - _pinned
+    assert not stale, (
+        f"{sorted(stale)} are in {REGISTER.name} but no test pins them; "
+        f"delete the entries or add the tests"
+    )
 
 
 def _coerce_mtime(value: Any) -> int | None:
@@ -143,7 +145,7 @@ RANGES = [
     pytest.param(
         10_000, 10_010,
         marks=pytest.mark.xfail(
-            strict=True, reason=KNOWN_DIVERGENCES["range-entirely-past-eof"]
+            strict=True, reason=reason("range-entirely-past-eof")
         ),
     ),
 ]
@@ -188,7 +190,7 @@ def test_info_agrees_on_size(native_fs, new_pelicanfs, federation, obj):
     compare(native, pure, fields=("size",))
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN_DIVERGENCES["info-is-stateful"])
+@pytest.mark.xfail(strict=True, reason=reason("info-is-stateful"))
 def test_pelicanfs_info_is_stateful(new_pelicanfs, federation):
     """A second info() on one instance must not fail because of the first.
 
@@ -209,7 +211,7 @@ def test_native_info_is_not_stateful(native_fs, federation):
         assert native_fs.info(federation.path(obj))["type"] == "file"
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN_DIVERGENCES["info-name-is-the-endpoint-path"])
+@pytest.mark.xfail(strict=True, reason=reason("info-name-is-the-endpoint-path"))
 def test_info_agrees_on_name(native_fs, pelicanfs_fs, federation):
     path = federation.path("hello_world.txt")
     native = normalize(native_fs.info(path))
@@ -223,7 +225,24 @@ def test_info_name_is_addressable(native_fs, federation):
     assert native_fs.cat_file(native_fs.info(path)["name"]) == b"Hello, World!"
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN_DIVERGENCES["info-type"])
+@pytest.mark.xfail(strict=True, reason=reason("info-mtime-shape"))
+def test_info_mtime_shapes_agree(native_fs, new_pelicanfs, federation):
+    """The two should describe a timestamp the same way.
+
+    normalize() absorbs this difference on purpose, so no other test in
+    this module can see it; without this one the register entry would
+    be prose with nothing behind it.
+    """
+    path = federation.path("hello_world.txt")
+    native = native_fs.info(path)["mtime"]
+    pure = new_pelicanfs().info(path)["mtime"]
+    assert type(native) is type(pure), (
+        f"mtime shapes differ: native={native!r} ({type(native).__name__}) "
+        f"pelicanfs={pure!r} ({type(pure).__name__})"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason=reason("info-type"))
 def test_info_agrees_on_type_for_a_collection(native_fs, pelicanfs_fs, federation):
     path = federation.path("subdir")
     native = normalize(native_fs.info(path))
@@ -231,7 +250,7 @@ def test_info_agrees_on_type_for_a_collection(native_fs, pelicanfs_fs, federatio
     compare(native, pure, fields=("type",))
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN_DIVERGENCES["ls-crashes-on-a-subcollection"])
+@pytest.mark.xfail(strict=True, reason=reason("ls-crashes-on-a-subcollection"))
 def test_ls_agrees(native_fs, pelicanfs_fs, federation):
     native = normalize_listing(native_fs.ls(federation.namespace, detail=True))
     pure = normalize_listing(pelicanfs_fs.ls(federation.namespace, detail=True))
@@ -246,7 +265,7 @@ def test_exists_agrees(native_fs, pelicanfs_fs, federation):
         assert native_fs.exists(path) == pelicanfs_fs.exists(path), path
 
 
-@pytest.mark.xfail(strict=True, reason=KNOWN_DIVERGENCES["ls-crashes-on-a-subcollection"])
+@pytest.mark.xfail(strict=True, reason=reason("ls-crashes-on-a-subcollection"))
 def test_find_agrees(native_fs, pelicanfs_fs, federation):
     native = sorted(p.rstrip("/") for p in native_fs.find(federation.namespace))
     pure = sorted(p.rstrip("/") for p in pelicanfs_fs.find(federation.namespace))

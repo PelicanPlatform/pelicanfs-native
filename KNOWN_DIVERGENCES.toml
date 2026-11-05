@@ -1,0 +1,97 @@
+# Divergences between pelicanfs_native and pelicanfs.
+#
+# This file is the register of every place the two implementations
+# disagree about the same operation against the same federation. It is
+# the single source of truth: test/test_differential.py loads it and
+# uses `summary` as the reason on an xfail(strict=True), so an entry
+# cannot drift away from the test that pins it, and
+# test_register_has_no_stale_entries fails if an entry stops being used.
+#
+# Because the xfails are strict, the suite stays green while a
+# divergence lasts and fails the day it is fixed -- which is the signal
+# to delete the entry.
+#
+# Fields:
+#   summary  one paragraph: what differs, and which side we believe.
+#   blame    "pelicanfs", "pelicanfs-native", "upstream" or "undecided".
+#   found    ISO date the oracle first reported it.
+#   evidence how to see it, beyond the test that pins it.
+
+[info-is-stateful]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+The first pelicanfs info() on a filesystem instance succeeds and every \
+later one on that instance raises FileNotFoundError. Each object stats \
+fine as the first call on a genuinely fresh instance and fails as the \
+second, so the state is per-instance: the first call caches a resolved \
+endpoint URL that is then reused for unrelated paths -- the same \
+endpoint path info() hands back as the object's name. This bites every \
+real caller, because fsspec keys its instance cache on the storage \
+options and hands the same PelicanFileSystem to everyone using the same \
+federation. The most serious finding here.\
+"""
+evidence = """
+Run test_info_agrees_on_size for one object at a time and each passes; \
+run them together against a shared instance and all but the first fail. \
+A fresh instance needs skip_instance_cache=True, or fsspec returns the \
+same object and "fresh" means nothing.\
+"""
+
+[info-name-is-the-endpoint-path]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+pelicanfs.info() returns the name it was ANSWERED from -- \
+'/api/v1.0/origin/data/ns/obj' -- rather than the namespace path \
+'/ns/obj' the caller asked for. That name cannot be handed back to \
+open() or ls(), which the fsspec contract requires.\
+"""
+evidence = """
+The Go client's stat echoes the same endpoint path, so this is an \
+upstream wart that pelicanfs passes through and pelicanfs_native \
+normalizes; see _entry in core.py. test_info_name_is_addressable pins \
+the property that matters.\
+"""
+
+[ls-crashes-on-a-subcollection]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+pelicanfs._ls_real calls int(item['size']) on every entry, and a \
+collection's PROPFIND size property is empty, so listing any collection \
+that contains a subdirectory raises ValueError: invalid literal for \
+int() with base 10: ''. The native side lists it fine.\
+"""
+evidence = "ls() or find() on a namespace containing any subdirectory."
+
+[info-type]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+pelicanfs.info() hardcodes type='file' and never reports a collection, \
+while the native client carries IsCollection through.\
+"""
+evidence = "info() on a directory returns type='file'."
+
+[info-mtime-shape]
+blame = "pelicanfs"
+found = "2026-11-05"
+summary = """
+pelicanfs reports mtime as an unparsed string from info() and as a \
+datetime under the key 'modified' from ls(); the native side reports an \
+int epoch. fsspec does not pin the encoding, but one class should not \
+use two shapes for one field.\
+"""
+evidence = "Compare info() and ls() output for the same object."
+
+[range-entirely-past-eof]
+blame = "undecided"
+found = "2026-11-05"
+summary = """
+A read whose whole range lies past the end of the object: the native \
+client returns b'', pelicanfs raises. fsspec does not pin this -- HTTP \
+answers 416 while a local filesystem returns b'' -- so this one needs a \
+decision before either side is called wrong.\
+"""
+evidence = "cat_file(path, 10000, 10010) on a 13-byte object."
