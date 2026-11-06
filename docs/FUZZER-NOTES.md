@@ -652,11 +652,16 @@ intended effect rather than overhead, so it was left alone.
 The skipped test is the targeted search, which is soak-only.
 
 Soak, for reference: the stateful machine at `--hypothesis-profile=soak`
-is 666 examples of up to 50 steps and runs in roughly 90 seconds. Each
-of the four soaks run during this round found something in that time;
-three were harness faults and one is the held `info()` finding above.
+is 666 examples of up to 50 steps and takes **8 m 25 s** to pass
+clean, which is why it needs its own `pytest.mark.timeout` (above).
+Six soaks were run during this round and the first five all found
+something: the held `info()` finding, two harness faults where the
+model disagreed with the export directory, the delete-staleness
+question, and the pytest-timeout misdiagnosis. The sixth is the clean
+one. That ratio is the argument for soaking the state machine rather
+than reading anything much into the 35-second default run.
 
-## `@precondition` and a live backend do not mix
+## Reading the last exception instead of the first
 
 A later soak died with
 
@@ -666,19 +671,40 @@ Data generation behaved differently between test cases.
 The second run drew more data than the first run.
 ```
 
-`listing` and `find_everything` carried `@precondition(lambda self:
-self.model)`. That makes a rule's *availability* depend on whether an
-earlier write succeeded, and against a live federation whether a write
-succeeded is external state: a replay that took a different branch
-drew a different amount and Hypothesis, rightly, refused to believe
-either run.
+That reads like a nondeterministic strategy, and the obvious suspects
+were `listing` and `find_everything`, which carried
+`@precondition(lambda self: self.model)` — a rule whose *availability*
+depends on whether an earlier write succeeded, which against a live
+federation is external state. The preconditions were removed. **The
+next soak failed identically**, which is the useful part.
 
-There are no preconditions left. Rules that need a path take one from
-a `Bundle`, whose emptiness Hypothesis models itself; rules that look
-at the run root as a whole return early when it is empty. The general
-rule for a state machine over a network service: let the bundle decide
-availability, never a predicate over state the service can change
-underneath you.
+The actual cause was the *first* exception in the group rather than
+the last:
+
+```
+Failed: Timeout (>300.0s) from pytest-timeout.   <- inside put_file
+hypothesis.errors.FlakyFailure: Inconsistent results from replaying a test case!
+  last: INTERESTING from Failed at .../outcomes.py:162
+  this: INTERESTING from FlakyStrategyDefinition at .../datatree.py:1108
+```
+
+`pyproject.toml` sets `timeout = 300`, which is right for the default
+profile and far too short for a soak — 666 sequences of up to 50
+network steps is several minutes of legitimate work. pytest-timeout
+interrupted Hypothesis mid-draw and Hypothesis reported the only thing
+it could see, which was that the draws no longer matched. The fix is
+`@pytest.mark.timeout(3600 if SOAK else 120)`.
+
+This is the third time in this project that a plausible reading of a
+symptom produced the wrong mechanism, and the first two are recorded
+further up this file. The pattern each time: the explanation was
+*available* from the evidence and was not read. Here the first
+exception in a two-exception group said "Timeout" in plain English.
+
+The precondition removal was kept, because the preconditions were
+genuinely state-dependent and the bundle already models availability
+correctly — but it fixed nothing, and saying otherwise would be
+exactly the mistake this section is about.
 
 ## Controls that can be seen failing
 

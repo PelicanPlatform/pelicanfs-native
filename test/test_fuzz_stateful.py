@@ -102,7 +102,24 @@ NETWORK_EXAMPLES = max(5, settings().max_examples // NETWORK_BUDGET_DIVISOR)
 # sequence of them, so the example budget is a third of the per-call
 # fuzzers' and the sequence length carries the exploration instead.
 STATEFUL_EXAMPLES = max(3, NETWORK_EXAMPLES // 3)
-STEP_COUNT = 50 if settings().max_examples > 10_000 else 8
+SOAK = settings().max_examples > 10_000
+STEP_COUNT = 50 if SOAK else 8
+
+# pyproject sets a 300 s per-test timeout, which is right for the
+# default profile and far too short for a soak: 666 sequences of up to
+# 50 network steps is several minutes of legitimate work. Two soaks
+# died on it, and the way they died is worth recording, because the
+# visible error was
+#
+#   FlakyStrategyDefinition: Inconsistent data generation! ...
+#   The second run drew more data than the first run.
+#
+# which reads like a nondeterministic strategy and is not one. The
+# real cause was the first exception in the group, further up:
+# pytest-timeout firing inside put_file and interrupting Hypothesis
+# mid-draw. Diagnosing it from the last exception rather than the
+# first cost a round trip and a wrong fix.
+TEST_TIMEOUT_S = 3600 if SOAK else 120
 
 # Plain enough that a step is about the *sequence* and not about the
 # name; 'with space.txt' is in because both libraries read it and only
@@ -603,6 +620,7 @@ class FederationMachine(RuleBasedStateMachine):
             self.disk_root.rmdir()
 
 
+@pytest.mark.timeout(TEST_TIMEOUT_S)
 def test_a_sequence_of_operations_agrees(
     native_fs, new_pelicanfs, federation, tmp_path_factory
 ):
