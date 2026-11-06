@@ -549,7 +549,12 @@ SOAK = PURE_EXAMPLES > 10_000
     reason="targeted search is soak-only: it can spend 60x the wall clock "
            "for a few points of acceptance rate (see the measurements above)",
 )
-@settings(max_examples=PURE_EXAMPLES // 10, deadline=None)
+# Its own timeout, and a budget that is not simply PURE_EXAMPLES: the
+# soak profile's 200 000 would be fine for the plain search and, on
+# the one run in three that goes slowly, days for this one. 5 000
+# capped at an hour is a hunt that finishes.
+@pytest.mark.timeout(3600)
+@settings(max_examples=min(5_000, PURE_EXAMPLES), deadline=None)
 @given(spellings(), st.sampled_from(HOSTS))
 def test_denotation_agrees_under_targeted_search(spelling, host):
     """The same property, searched towards the productive region."""
